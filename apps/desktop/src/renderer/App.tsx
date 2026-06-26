@@ -112,6 +112,8 @@ export function App() {
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [groupModal, setGroupModal] = useState(false);
   const [groupName, setGroupName] = useState('');
+  const [draggingEntryId, setDraggingEntryId] = useState<string | null>(null);
+  const [dropTargetGroupId, setDropTargetGroupId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<EntrySummary | null>(null);
   const [confirmAttachmentDelete, setConfirmAttachmentDelete] = useState<{
@@ -548,6 +550,69 @@ export function App() {
     setToast('Группа создана');
   }
 
+  function beginEntryDrag(event: React.DragEvent, entry: EntrySummary): void {
+    if (!active || active.readOnly) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-passdeck-entry-id', entry.id);
+    event.dataTransfer.setData('text/plain', entry.id);
+    setDraggingEntryId(entry.id);
+    setDropTargetGroupId(null);
+  }
+
+  function allowEntryDrop(event: React.DragEvent, groupId: string): void {
+    if (!active || active.readOnly || !draggingEntryId) {
+      return;
+    }
+    const entry = active.entries.find((item) => item.id === draggingEntryId);
+    if (!entry || entry.groupId === groupId) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setDropTargetGroupId(groupId);
+  }
+
+  async function dropEntry(event: React.DragEvent, targetGroupId: string): Promise<void> {
+    event.preventDefault();
+    if (!active || active.readOnly) {
+      return;
+    }
+    const entryId =
+      event.dataTransfer.getData('application/x-passdeck-entry-id') ||
+      event.dataTransfer.getData('text/plain') ||
+      draggingEntryId;
+    setDraggingEntryId(null);
+    setDropTargetGroupId(null);
+    if (!entryId) {
+      return;
+    }
+    const entry = active.entries.find((item) => item.id === entryId);
+    if (!entry || entry.groupId === targetGroupId) {
+      return;
+    }
+    const result = await window.passdeck.database.moveEntry({
+      sessionId: active.sessionId,
+      entryId,
+      targetGroupId,
+    });
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+    updateSession(result.data);
+    setSelectedGroupId(targetGroupId);
+    setSelectedEntryId(entryId);
+    setToast('Запись перемещена');
+  }
+
+  function endEntryDrag(): void {
+    setDraggingEntryId(null);
+    setDropTargetGroupId(null);
+  }
+
   async function deleteEntry(): Promise<void> {
     if (!active || !confirmDelete) {
       return;
@@ -560,7 +625,7 @@ export function App() {
     updateSession(result.data);
     setConfirmDelete(null);
     setSelectedEntryId(null);
-    setToast('Запись перемещена в корзину');
+    setToast('Запись удалена');
   }
 
   async function addAttachments(entry: EntrySummary): Promise<void> {
@@ -894,6 +959,7 @@ export function App() {
                 type="button"
                 onClick={() => setGroupModal(true)}
                 title="Новая группа"
+                disabled={active.readOnly}
               >
                 +
               </button>
@@ -902,7 +968,10 @@ export function App() {
               <button
                 className={`group-row ${selectedGroupId === null ? 'group-row--active' : ''}`}
                 type="button"
-                onClick={() => setSelectedGroupId(null)}
+                onClick={() => {
+                  setSelectedGroupId(null);
+                  setSelectedEntryId(null);
+                }}
               >
                 <span>▦</span>
                 <strong>Все записи</strong>
@@ -911,13 +980,23 @@ export function App() {
               {active.groups.map((group) => (
                 <button
                   key={group.id}
-                  className={`group-row ${selectedGroupId === group.id ? 'group-row--active' : ''}`}
+                  className={`group-row ${
+                    selectedGroupId === group.id ? 'group-row--active' : ''
+                  } ${dropTargetGroupId === group.id ? 'group-row--drop-target' : ''}`}
                   style={{ paddingLeft: 14 + group.depth * 18 }}
                   type="button"
                   onClick={() => {
                     setSelectedGroupId(group.id);
                     setSelectedEntryId(null);
                   }}
+                  onDragEnter={(event) => allowEntryDrop(event, group.id)}
+                  onDragOver={(event) => allowEntryDrop(event, group.id)}
+                  onDragLeave={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                      setDropTargetGroupId((current) => (current === group.id ? null : current));
+                    }
+                  }}
+                  onDrop={(event) => void dropEntry(event, group.id)}
                 >
                   <span>{group.depth === 0 ? '◇' : '›'}</span>
                   <strong>{group.name}</strong>
@@ -992,8 +1071,13 @@ export function App() {
                 filteredEntries.map((entry) => (
                   <button
                     key={entry.id}
-                    className={`entry-row ${selectedEntryId === entry.id ? 'entry-row--active' : ''}`}
+                    className={`entry-row ${selectedEntryId === entry.id ? 'entry-row--active' : ''} ${
+                      draggingEntryId === entry.id ? 'entry-row--dragging' : ''
+                    }`}
                     type="button"
+                    draggable={!active.readOnly}
+                    onDragStart={(event) => beginEntryDrag(event, entry)}
+                    onDragEnd={endEntryDrag}
                     onClick={() => {
                       setSelectedEntryId(entry.id);
                       setRevealed(null);

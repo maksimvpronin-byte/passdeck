@@ -243,6 +243,64 @@ describe('DatabaseService', () => {
     await third.service.closeDatabase(finalView.sessionId);
   }, 30_000);
 
+  it('moves an entry between groups and keeps the move after reopening', async () => {
+    const { root, service } = await createHarness();
+    const filePath = path.join(root, 'Moves.kdbx');
+    const password = 'PassDeck-Moves-2026!';
+    const created = await service.createDatabase({ path: filePath, password, name: 'Moves' });
+    const rootGroupId = created.groups[0]!.id;
+
+    const withWork = service.createGroup({
+      sessionId: created.sessionId,
+      parentId: rootGroupId,
+      name: 'Work',
+    });
+    const workGroupId = withWork.groups.find((group) => group.name === 'Work')!.id;
+    const withArchive = service.createGroup({
+      sessionId: created.sessionId,
+      parentId: rootGroupId,
+      name: 'Archive',
+    });
+    const archiveGroupId = withArchive.groups.find((group) => group.name === 'Archive')!.id;
+
+    const withEntry = service.saveEntry({
+      sessionId: created.sessionId,
+      groupId: workGroupId,
+      title: 'Movable entry',
+      username: 'demo',
+      password: 'move-password',
+      url: '',
+      notes: '',
+      tags: [],
+      favorite: false,
+      expires: false,
+    });
+    const entryId = withEntry.entries[0]!.id;
+
+    const movedEntry = service.moveEntry({
+      sessionId: created.sessionId,
+      entryId,
+      targetGroupId: archiveGroupId,
+    });
+    expect(movedEntry.entries.find((entry) => entry.id === entryId)!.groupId).toBe(archiveGroupId);
+
+    await service.saveDatabase(created.sessionId);
+    await service.closeDatabase(created.sessionId);
+
+    const second = await createHarness();
+    const reopened = await second.service.openDatabase({ path: filePath, password });
+    expect(reopened.entries.find((entry) => entry.id === entryId)!.groupId).toBe(archiveGroupId);
+    second.service.deleteEntry(reopened.sessionId, entryId);
+    await second.service.saveDatabase(reopened.sessionId);
+    await second.service.closeDatabase(reopened.sessionId);
+
+    const third = await createHarness();
+    const afterDelete = await third.service.openDatabase({ path: filePath, password });
+    expect(afterDelete.entries).toHaveLength(0);
+    expect(afterDelete.groups.some((group) => group.name === 'Recycle Bin')).toBe(false);
+    await third.service.closeDatabase(afterDelete.sessionId);
+  }, 30_000);
+
   it('rejects empty, reserved and duplicate custom field names without mutating the entry', async () => {
     const { root, service } = await createHarness();
     const filePath = path.join(root, 'CustomFieldValidation.kdbx');

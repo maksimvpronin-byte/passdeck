@@ -1,4 +1,4 @@
-﻿node_modules/
+node_modules/
 dist/
 release/
 coverage/
@@ -6,19 +6,11 @@ playwright-report/
 test-results/
 data/
 data-dev/
-.tools/
-.vite/
-PassDeck-*-patch/
-*.zip
-*.exe
-*.dmg
-*.app
 *.log
 *.tmp
 *.bak
-*.lock
-*.kdbx
-!test-data/PassDeck-Demo.kdbx
 .DS_Store
 Thumbs.db
+
 .patch-backups/
+PassDeck-*-patch/

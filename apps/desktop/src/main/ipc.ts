@@ -4,6 +4,7 @@ import type {
   CopySecretRequest,
   CreateDatabaseRequest,
   CreateGroupRequest,
+  MoveEntryRequest,
   OpenDatabaseRequest,
   SaveEntryRequest,
 } from '@passdeck/shared';
@@ -87,6 +88,13 @@ export function registerIpc(
   ipcMain.handle('database:create-group', (_event, request: CreateGroupRequest) => {
     try {
       return { ok: true, data: databases.createGroup(request) };
+    } catch (error) {
+      return toApiError(error);
+    }
+  });
+  ipcMain.handle('database:move-entry', (_event, request: MoveEntryRequest) => {
+    try {
+      return { ok: true, data: databases.moveEntry(request) };
     } catch (error) {
       return toApiError(error);
     }

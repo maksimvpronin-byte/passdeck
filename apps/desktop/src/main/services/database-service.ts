@@ -23,6 +23,7 @@ import type {
   DatabaseView,
   EntrySummary,
   GroupSummary,
+  MoveEntryRequest,
   OpenDatabaseRequest,
   SaveEntryRequest,
 } from '@passdeck/shared';
@@ -285,7 +286,7 @@ export class DatabaseService {
     const session = this.getWritableSession(request.sessionId);
     const db = session.db;
     const group = this.findGroup(db, request.groupId);
-    if (!group) {
+    if (!group || this.isRecycleBin(db, group)) {
       throw new PassDeckError('GROUP_NOT_FOUND', 'Группа не найдена.');
     }
 
@@ -362,7 +363,25 @@ export class DatabaseService {
     if (!entry) {
       throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
     }
-    session.db.remove(entry);
+    session.db.move(entry, undefined);
+    session.dirty = true;
+    return this.toView(session);
+  }
+
+  moveEntry(request: MoveEntryRequest): DatabaseView {
+    const session = this.getWritableSession(request.sessionId);
+    const entry = this.findEntry(session.db, request.entryId);
+    if (!entry) {
+      throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
+    }
+    const target = this.findGroup(session.db, request.targetGroupId);
+    if (!target || this.isRecycleBin(session.db, target)) {
+      throw new PassDeckError('GROUP_NOT_FOUND', 'Группа назначения не найдена.');
+    }
+    if (entry.parentGroup?.uuid.toString() === target.uuid.toString()) {
+      return this.toView(session);
+    }
+    session.db.move(entry, target);
     session.dirty = true;
     return this.toView(session);
   }
@@ -372,7 +391,7 @@ export class DatabaseService {
     const parent = request.parentId
       ? this.findGroup(session.db, request.parentId)
       : session.db.getDefaultGroup();
-    if (!parent) {
+    if (!parent || this.isRecycleBin(session.db, parent)) {
       throw new PassDeckError('GROUP_NOT_FOUND', 'Родительская группа не найдена.');
     }
     session.db.createGroup(parent, request.name.trim() || 'Новая группа');
@@ -661,9 +680,13 @@ export class DatabaseService {
     const groups: GroupSummary[] = [];
     const entries: EntrySummary[] = [];
     const root = session.db.getDefaultGroup();
+    const recycleBinId = session.db.meta.recycleBinUuid?.toString();
 
     const visit = (group: KdbxGroup, parentId: string | null, depth: number): void => {
       const groupId = group.uuid.toString();
+      if (parentId !== null && groupId === recycleBinId) {
+        return;
+      }
       groups.push({
         id: groupId,
         name: group.name || 'Без названия',
@@ -750,12 +773,19 @@ export class DatabaseService {
     return session;
   }
 
+  private isRecycleBin(db: Kdbx, group: KdbxGroup): boolean {
+    return db.meta.recycleBinUuid?.toString() === group.uuid.toString();
+  }
+
   private findGroup(db: Kdbx, groupId: string): KdbxGroup | undefined {
     return db.getGroup(groupId);
   }
 
   private findEntry(db: Kdbx, entryId: string): KdbxEntry | undefined {
     for (const group of db.getDefaultGroup().allGroups()) {
+      if (this.isRecycleBin(db, group)) {
+        continue;
+      }
       const found = group.entries.find((entry) => entry.uuid.toString() === entryId);
       if (found) {
         return found;

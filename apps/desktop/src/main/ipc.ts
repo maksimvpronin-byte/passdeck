@@ -5,6 +5,7 @@ import type {
   CreateDatabaseRequest,
   CreateGroupRequest,
   MoveEntryRequest,
+  MoveGroupRequest,
   OpenDatabaseRequest,
   SaveEntryRequest,
 } from '@passdeck/shared';
@@ -99,6 +100,14 @@ export function registerIpc(
       return toApiError(error);
     }
   });
+  ipcMain.handle('database:move-group', (_event, request: MoveGroupRequest) => {
+    try {
+      return { ok: true, data: databases.moveGroup(request) };
+    } catch (error) {
+      return toApiError(error);
+    }
+  });
+
   ipcMain.handle('database:lock', async (_event, sessionId: string) => {
     try {
       return { ok: true, data: await databases.lockDatabase(sessionId) };

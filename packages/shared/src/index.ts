@@ -123,6 +123,12 @@ export interface MoveEntryRequest {
   targetGroupId: string;
 }
 
+export interface MoveGroupRequest {
+  sessionId: string;
+  groupId: string;
+  targetGroupId: string;
+}
+
 export interface CopySecretRequest {
   value: string;
   kind: 'password' | 'username' | 'url' | 'custom';
@@ -157,6 +163,7 @@ export interface PassDeckApi {
     deleteEntry(sessionId: string, entryId: string): Promise<ApiResult<DatabaseView>>;
     createGroup(request: CreateGroupRequest): Promise<ApiResult<DatabaseView>>;
     moveEntry(request: MoveEntryRequest): Promise<ApiResult<DatabaseView>>;
+    moveGroup(request: MoveGroupRequest): Promise<ApiResult<DatabaseView>>;
     lock(sessionId: string): Promise<ApiResult<DatabaseView>>;
     unlock(sessionId: string, password: string): Promise<ApiResult<DatabaseView>>;
     close(sessionId: string): Promise<ApiResult<null>>;

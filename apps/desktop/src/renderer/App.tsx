@@ -113,6 +113,8 @@ export function App() {
   const [groupModal, setGroupModal] = useState(false);
   const [groupName, setGroupName] = useState('');
   const [draggingEntryId, setDraggingEntryId] = useState<string | null>(null);
+
+  const [draggingGroupId, setDraggingGroupId] = useState<string | null>(null);
   const [dropTargetGroupId, setDropTargetGroupId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<EntrySummary | null>(null);
@@ -559,7 +561,85 @@ export function App() {
     event.dataTransfer.setData('application/x-passdeck-entry-id', entry.id);
     event.dataTransfer.setData('text/plain', entry.id);
     setDraggingEntryId(entry.id);
+    setDraggingGroupId(null);
     setDropTargetGroupId(null);
+  }
+
+  function canMoveGroup(groupId: string, targetGroupId: string): boolean {
+    if (!active) {
+      return false;
+    }
+
+    const group = active.groups.find((item) => item.id === groupId);
+    const target = active.groups.find((item) => item.id === targetGroupId);
+
+    if (
+      !group ||
+      !target ||
+      group.parentId === null ||
+      group.id === target.id ||
+      group.parentId === target.id
+    ) {
+      return false;
+    }
+
+    let current: (typeof active.groups)[number] | undefined = target;
+    while (current) {
+      if (current.id === group.id) {
+        return false;
+      }
+
+      const parentId: string | null = current.parentId;
+      current = parentId
+        ? active.groups.find((item) => item.id === parentId)
+        : undefined;
+    }
+
+    return true;
+  }
+
+  function beginGroupDrag(event: React.DragEvent, groupId: string): void {
+    if (!active || active.readOnly) {
+      event.preventDefault();
+      return;
+    }
+
+    const group = active.groups.find((item) => item.id === groupId);
+    if (!group || group.parentId === null) {
+      event.preventDefault();
+      return;
+    }
+
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-passdeck-group-id', group.id);
+    event.dataTransfer.setData('text/plain', group.id);
+    setDraggingGroupId(group.id);
+    setDraggingEntryId(null);
+    setDropTargetGroupId(null);
+  }
+
+  function allowGroupDrop(event: React.DragEvent, targetGroupId: string): void {
+    if (
+      !active ||
+      active.readOnly ||
+      !draggingGroupId ||
+      !canMoveGroup(draggingGroupId, targetGroupId)
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setDropTargetGroupId(targetGroupId);
+  }
+
+  function allowTreeDrop(event: React.DragEvent, targetGroupId: string): void {
+    if (draggingGroupId) {
+      allowGroupDrop(event, targetGroupId);
+      return;
+    }
+
+    allowEntryDrop(event, targetGroupId);
   }
 
   function allowEntryDrop(event: React.DragEvent, groupId: string): void {
@@ -608,8 +688,64 @@ export function App() {
     setToast('Запись перемещена');
   }
 
+  async function dropGroup(
+    event: React.DragEvent,
+    targetGroupId: string,
+  ): Promise<void> {
+    event.preventDefault();
+
+    if (!active || active.readOnly) {
+      return;
+    }
+
+    const groupId =
+      event.dataTransfer.getData('application/x-passdeck-group-id') ||
+      draggingGroupId;
+
+    setDraggingEntryId(null);
+    setDraggingGroupId(null);
+    setDropTargetGroupId(null);
+
+    if (!groupId || !canMoveGroup(groupId, targetGroupId)) {
+      return;
+    }
+
+    const result = await window.passdeck.database.moveGroup({
+      sessionId: active.sessionId,
+      groupId,
+      targetGroupId,
+    });
+
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+
+    updateSession(result.data);
+    setSelectedGroupId(groupId);
+    setSelectedEntryId(null);
+    setToast('Группа перемещена');
+  }
+
+  async function dropOnGroup(
+    event: React.DragEvent,
+    targetGroupId: string,
+  ): Promise<void> {
+    const groupId =
+      event.dataTransfer.getData('application/x-passdeck-group-id') ||
+      draggingGroupId;
+
+    if (groupId) {
+      await dropGroup(event, targetGroupId);
+      return;
+    }
+
+    await dropEntry(event, targetGroupId);
+  }
+
   function endEntryDrag(): void {
     setDraggingEntryId(null);
+    setDraggingGroupId(null);
     setDropTargetGroupId(null);
   }
 
@@ -985,18 +1121,21 @@ export function App() {
                   } ${dropTargetGroupId === group.id ? 'group-row--drop-target' : ''}`}
                   style={{ paddingLeft: 14 + group.depth * 18 }}
                   type="button"
+          draggable={group.parentId !== null && !active.readOnly}
+          onDragStart={(event) => beginGroupDrag(event, group.id)}
+          onDragEnd={endEntryDrag}
                   onClick={() => {
                     setSelectedGroupId(group.id);
                     setSelectedEntryId(null);
                   }}
-                  onDragEnter={(event) => allowEntryDrop(event, group.id)}
-                  onDragOver={(event) => allowEntryDrop(event, group.id)}
+                  onDragEnter={(event) => allowTreeDrop(event, group.id)}
+                  onDragOver={(event) => allowTreeDrop(event, group.id)}
                   onDragLeave={(event) => {
                     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
                       setDropTargetGroupId((current) => (current === group.id ? null : current));
                     }
                   }}
-                  onDrop={(event) => void dropEntry(event, group.id)}
+                  onDrop={(event) => void dropOnGroup(event, group.id)}
                 >
                   <span>{group.depth === 0 ? '◇' : '›'}</span>
                   <strong>{group.name}</strong>

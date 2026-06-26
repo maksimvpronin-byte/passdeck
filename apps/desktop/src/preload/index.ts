@@ -21,6 +21,7 @@ const api: PassDeckApi = {
       ipcRenderer.invoke('database:delete-entry', sessionId, entryId),
     createGroup: (request) => ipcRenderer.invoke('database:create-group', request),
     moveEntry: (request) => ipcRenderer.invoke('database:move-entry', request),
+    moveGroup: (request) => ipcRenderer.invoke('database:move-group', request),
     lock: (sessionId) => ipcRenderer.invoke('database:lock', sessionId),
     unlock: (sessionId, password) => ipcRenderer.invoke('database:unlock', sessionId, password),
     close: (sessionId) => ipcRenderer.invoke('database:close', sessionId),

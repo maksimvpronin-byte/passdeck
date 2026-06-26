@@ -24,6 +24,7 @@ import type {
   EntrySummary,
   GroupSummary,
   MoveEntryRequest,
+  MoveGroupRequest,
   OpenDatabaseRequest,
   SaveEntryRequest,
 } from '@passdeck/shared';
@@ -382,6 +383,49 @@ export class DatabaseService {
       return this.toView(session);
     }
     session.db.move(entry, target);
+    session.dirty = true;
+    return this.toView(session);
+  }
+
+  moveGroup(request: MoveGroupRequest): DatabaseView {
+    const session = this.getWritableSession(request.sessionId);
+    const group = this.findGroup(session.db, request.groupId);
+
+    if (!group || this.isRecycleBin(session.db, group)) {
+      throw new PassDeckError('GROUP_NOT_FOUND', 'Перемещаемая группа не найдена.');
+    }
+
+    const root = session.db.getDefaultGroup();
+    if (group.uuid.toString() === root.uuid.toString()) {
+      throw new PassDeckError('GROUP_MOVE_ROOT', 'Корневую группу перемещать нельзя.');
+    }
+
+    const target = this.findGroup(session.db, request.targetGroupId);
+    if (!target || this.isRecycleBin(session.db, target)) {
+      throw new PassDeckError('GROUP_NOT_FOUND', 'Группа назначения не найдена.');
+    }
+
+    if (group.uuid.toString() === target.uuid.toString()) {
+      throw new PassDeckError('GROUP_MOVE_SELF', 'Нельзя переместить группу в саму себя.');
+    }
+
+    if (group.parentGroup?.uuid.toString() === target.uuid.toString()) {
+      return this.toView(session);
+    }
+
+    let current: KdbxGroup | undefined = target;
+    while (current) {
+      if (current.uuid.toString() === group.uuid.toString()) {
+        throw new PassDeckError(
+          'GROUP_MOVE_CYCLE',
+          'Нельзя переместить группу в собственную вложенную группу.',
+        );
+      }
+      current = current.parentGroup;
+    }
+
+    session.db.move(group, target);
+    group.times.update();
     session.dirty = true;
     return this.toView(session);
   }

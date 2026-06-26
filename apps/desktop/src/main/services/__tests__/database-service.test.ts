@@ -301,6 +301,82 @@ describe('DatabaseService', () => {
     await third.service.closeDatabase(afterDelete.sessionId);
   }, 30_000);
 
+  it('moves a group with all descendants and rejects invalid targets', async () => {
+    const { root, service } = await createHarness();
+    const filePath = path.join(root, 'GroupMoves.kdbx');
+    const password = 'PassDeck-Group-Moves-2026!';
+    const created = await service.createDatabase({
+      path: filePath,
+      password,
+      name: 'Group moves',
+    });
+    const rootGroupId = created.groups[0]!.id;
+
+    const withWork = service.createGroup({
+      sessionId: created.sessionId,
+      parentId: rootGroupId,
+      name: 'Work',
+    });
+    const workGroupId = withWork.groups.find((group) => group.name === 'Work')!.id;
+
+    const withChild = service.createGroup({
+      sessionId: created.sessionId,
+      parentId: workGroupId,
+      name: 'Child',
+    });
+    const childGroupId = withChild.groups.find((group) => group.name === 'Child')!.id;
+
+    const withArchive = service.createGroup({
+      sessionId: created.sessionId,
+      parentId: rootGroupId,
+      name: 'Archive',
+    });
+    const archiveGroupId = withArchive.groups.find((group) => group.name === 'Archive')!.id;
+
+    const moved = service.moveGroup({
+      sessionId: created.sessionId,
+      groupId: workGroupId,
+      targetGroupId: archiveGroupId,
+    });
+
+    expect(moved.groups.find((group) => group.id === workGroupId)!.parentId).toBe(
+      archiveGroupId,
+    );
+    expect(moved.groups.find((group) => group.id === childGroupId)!.parentId).toBe(
+      workGroupId,
+    );
+
+    expect(() =>
+      service.moveGroup({
+        sessionId: created.sessionId,
+        groupId: archiveGroupId,
+        targetGroupId: childGroupId,
+      }),
+    ).toThrow('собственную вложенную группу');
+
+    expect(() =>
+      service.moveGroup({
+        sessionId: created.sessionId,
+        groupId: rootGroupId,
+        targetGroupId: archiveGroupId,
+      }),
+    ).toThrow('Корневую группу');
+
+    await service.saveDatabase(created.sessionId);
+    await service.closeDatabase(created.sessionId);
+
+    const second = await createHarness();
+    const reopened = await second.service.openDatabase({ path: filePath, password });
+    const reopenedWork = reopened.groups.find((group) => group.name === 'Work')!;
+    const reopenedArchive = reopened.groups.find((group) => group.name === 'Archive')!;
+    const reopenedChild = reopened.groups.find((group) => group.name === 'Child')!;
+
+    expect(reopenedWork.parentId).toBe(reopenedArchive.id);
+    expect(reopenedChild.parentId).toBe(reopenedWork.id);
+
+    await second.service.closeDatabase(reopened.sessionId);
+  }, 30_000);
+
   it('rejects empty, reserved and duplicate custom field names without mutating the entry', async () => {
     const { root, service } = await createHarness();
     const filePath = path.join(root, 'CustomFieldValidation.kdbx');

@@ -1,0 +1,1252 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { DEFAULT_AUTO_TYPE_SEQUENCE } from '@passdeck/shared';
+import type { AppSettings, DatabaseView, EntrySummary, SaveEntryRequest } from '@passdeck/shared';
+import { Logo } from './components/Logo';
+import { Modal } from './components/Modal';
+
+type EditorState = {
+  entry?: EntrySummary;
+  groupId: string;
+  title: string;
+  username: string;
+  password: string;
+  url: string;
+  notes: string;
+  tags: string;
+  favorite: boolean;
+  expires: boolean;
+  expiryTime: string;
+  autoTypeEnabled: boolean;
+  autoTypeSequence: string;
+};
+
+const emptyEditor = (groupId: string): EditorState => ({
+  groupId,
+  title: '',
+  username: '',
+  password: '',
+  url: '',
+  notes: '',
+  tags: '',
+  favorite: false,
+  expires: false,
+  expiryTime: '',
+  autoTypeEnabled: true,
+  autoTypeSequence: DEFAULT_AUTO_TYPE_SEQUENCE,
+});
+
+function basename(filePath: string): string {
+  return filePath.split(/[\\/]/).pop() || filePath;
+}
+
+function resultMessage(result: { error?: { message: string; details?: string } }): string {
+  return result.error?.details
+    ? `${result.error.message}\n${result.error.details}`
+    : result.error?.message || 'Неизвестная ошибка';
+}
+
+export function App() {
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [sessions, setSessions] = useState<DatabaseView[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [unlockTarget, setUnlockTarget] = useState<{ path?: string; sessionId?: string } | null>(
+    null,
+  );
+  const [unlockPassword, setUnlockPassword] = useState('');
+  const [openQueue, setOpenQueue] = useState<string[]>([]);
+  const [createTarget, setCreateTarget] = useState<string | null>(null);
+  const [createName, setCreateName] = useState('PassDeck');
+  const [createPassword, setCreatePassword] = useState('');
+  const [createConfirm, setCreateConfirm] = useState('');
+  const [editor, setEditor] = useState<EditorState | null>(null);
+  const [groupModal, setGroupModal] = useState(false);
+  const [groupName, setGroupName] = useState('');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<EntrySummary | null>(null);
+  const [revealed, setRevealed] = useState<{ entryId: string; value: string } | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const revealTimer = useRef<number | null>(null);
+
+  const active = sessions.find((session) => session.sessionId === activeId) ?? sessions[0] ?? null;
+  const selectedEntry = active?.entries.find((entry) => entry.id === selectedEntryId) ?? null;
+
+  const updateSession = useCallback((view: DatabaseView) => {
+    setSessions((current) => {
+      const index = current.findIndex((item) => item.sessionId === view.sessionId);
+      if (index === -1) {
+        return [...current, view];
+      }
+      return current.map((item) => (item.sessionId === view.sessionId ? view : item));
+    });
+    activateSession(view);
+  }, []);
+
+  const refreshSessions = useCallback(async () => {
+    const list = await window.passdeck.database.list();
+    setSessions(list);
+    setActiveId((current) => current ?? list[0]?.sessionId ?? null);
+  }, []);
+
+  useEffect(() => {
+    void Promise.all([window.passdeck.settings.get(), window.passdeck.database.list()]).then(
+      ([loadedSettings, loadedSessions]) => {
+        setSettings(loadedSettings);
+        setSessions(loadedSessions);
+        const first = loadedSessions[0];
+        if (first) {
+          activateSession(first);
+        }
+      },
+    );
+  }, []);
+
+  useEffect(() => {
+    const unsubscribeError = window.passdeck.autoType.onError((message) => {
+      setError(message);
+    });
+    return unsubscribeError;
+  }, []);
+
+  useEffect(() => {
+    void window.passdeck.autoType.setSelection(
+      active && !active.locked ? active.sessionId : null,
+      selectedEntry?.id ?? null,
+    );
+  }, [active, selectedEntry?.id]);
+
+  useEffect(() => {
+    if (!settings) {
+      return;
+    }
+    document.documentElement.dataset.theme = settings.theme === 'system' ? 'dark' : settings.theme;
+    document.documentElement.style.setProperty('--ui-scale', String(settings.uiScale));
+  }, [settings]);
+
+  useEffect(() => {
+    if (!settings || settings.autoLockMinutes <= 0 || sessions.every((session) => session.locked)) {
+      return;
+    }
+    let timer = window.setTimeout(() => {
+      void window.passdeck.app.lockAll().then(() => refreshSessions());
+    }, settings.autoLockMinutes * 60_000);
+    const reset = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        void window.passdeck.app.lockAll().then(() => refreshSessions());
+      }, settings.autoLockMinutes * 60_000);
+    };
+    window.addEventListener('keydown', reset);
+    window.addEventListener('pointerdown', reset);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('keydown', reset);
+      window.removeEventListener('pointerdown', reset);
+    };
+  }, [settings, sessions, refreshSessions]);
+
+  function activateSession(session: DatabaseView): void {
+    setActiveId(session.sessionId);
+    setSelectedEntryId(null);
+    setRevealed(null);
+    if (revealTimer.current) {
+      window.clearTimeout(revealTimer.current);
+    }
+    setSelectedGroupId(
+      session.locked ? null : (session.selectedGroupId ?? session.groups[0]?.id ?? null),
+    );
+  }
+
+  const filteredEntries = useMemo(() => {
+    if (!active || active.locked) {
+      return [];
+    }
+    const query = search.trim().toLocaleLowerCase();
+    return active.entries.filter((entry) => {
+      const groupMatch = !selectedGroupId || entry.groupId === selectedGroupId;
+      const queryMatch =
+        !query ||
+        [
+          entry.title,
+          entry.username,
+          entry.url,
+          entry.notes,
+          entry.tags.join(' '),
+          ...entry.customFields.map((field) => `${field.key} ${field.value}`),
+        ].some((value) => value.toLocaleLowerCase().includes(query));
+      return groupMatch && queryMatch;
+    });
+  }, [active, search, selectedGroupId]);
+
+  async function chooseOpen(): Promise<void> {
+    const paths = await window.passdeck.dialog.chooseOpenFiles();
+    const first = paths[0];
+    if (first) {
+      setOpenQueue(paths.slice(1));
+      setUnlockTarget({ path: first });
+    }
+  }
+
+  function openRecent(filePath: string): void {
+    setUnlockTarget({ path: filePath });
+  }
+
+  async function submitUnlock(event: React.FormEvent): Promise<void> {
+    event.preventDefault();
+    if (!unlockTarget || !unlockPassword) {
+      return;
+    }
+    const result = unlockTarget.sessionId
+      ? await window.passdeck.database.unlock(unlockTarget.sessionId, unlockPassword)
+      : await window.passdeck.database.open({
+          path: unlockTarget.path ?? '',
+          password: unlockPassword,
+        });
+    setUnlockPassword('');
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+    updateSession(result.data);
+    const next = openQueue[0];
+    if (next) {
+      setOpenQueue(openQueue.slice(1));
+      setUnlockTarget({ path: next });
+    } else {
+      setUnlockTarget(null);
+    }
+    setToast('База открыта');
+  }
+
+  async function chooseCreate(): Promise<void> {
+    const target = await window.passdeck.dialog.chooseCreateFile('PassDeck.kdbx');
+    if (target) {
+      setCreateTarget(target);
+      setCreateName(basename(target).replace(/\.kdbx$/i, '') || 'PassDeck');
+    }
+  }
+
+  async function submitCreate(event: React.FormEvent): Promise<void> {
+    event.preventDefault();
+    if (!createTarget) {
+      return;
+    }
+    if (createPassword.length < 8) {
+      setError('Мастер-пароль должен содержать минимум 8 символов.');
+      return;
+    }
+    if (createPassword !== createConfirm) {
+      setError('Пароли не совпадают.');
+      return;
+    }
+    const result = await window.passdeck.database.create({
+      path: createTarget,
+      name: createName.trim() || 'PassDeck',
+      password: createPassword,
+    });
+    setCreatePassword('');
+    setCreateConfirm('');
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+    updateSession(result.data);
+    setCreateTarget(null);
+    setToast('Новая база создана');
+    const updatedSettings = await window.passdeck.settings.get();
+    setSettings(updatedSettings);
+  }
+
+  async function saveActive(): Promise<void> {
+    if (!active) {
+      return;
+    }
+    const result = await window.passdeck.database.save(active.sessionId);
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+    updateSession(result.data);
+    setToast('База сохранена');
+  }
+
+  async function lockActive(): Promise<void> {
+    if (!active) {
+      return;
+    }
+    const result = await window.passdeck.database.lock(active.sessionId);
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+    updateSession(result.data);
+    setSelectedEntryId(null);
+    setRevealed(null);
+  }
+
+  async function closeSession(sessionId: string): Promise<void> {
+    const result = await window.passdeck.database.close(sessionId);
+    if (!result.ok) {
+      setError(resultMessage(result));
+      return;
+    }
+    setSessions((current) => current.filter((session) => session.sessionId !== sessionId));
+    setActiveId((current) => {
+      if (current !== sessionId) {
+        return current;
+      }
+      return sessions.find((session) => session.sessionId !== sessionId)?.sessionId ?? null;
+    });
+  }
+
+  function beginEdit(entry?: EntrySummary): void {
+    if (!active || active.locked) {
+      return;
+    }
+    const groupId = entry?.groupId ?? selectedGroupId ?? active.groups[0]?.id;
+    if (!groupId) {
+      setError('Сначала создайте группу.');
+      return;
+    }
+    setEditor(
+      entry
+        ? {
+            entry,
+            groupId,
+            title: entry.title,
+            username: entry.username,
+            password: '',
+            url: entry.url,
+            notes: entry.notes,
+            tags: entry.tags.join(', '),
+            favorite: entry.favorite,
+            expires: entry.expires,
+            expiryTime: entry.expiryTime?.slice(0, 10) ?? '',
+            autoTypeEnabled: entry.autoTypeEnabled,
+            autoTypeSequence: entry.autoTypeSequence,
+          }
+        : emptyEditor(groupId),
+    );
+  }
+
+  async function submitEntry(event: React.FormEvent): Promise<void> {
+    event.preventDefault();
+    if (!active || !editor) {
+      return;
+    }
+    const request: SaveEntryRequest = {
+      sessionId: active.sessionId,
+      ...(editor.entry ? { entryId: editor.entry.id } : {}),
+      groupId: editor.groupId,
+      title: editor.title,
+      username: editor.username,
+      ...(editor.password || !editor.entry ? { password: editor.password } : {}),
+      url: editor.url,
+      notes: editor.notes,
+      tags: editor.tags
+        .split(',')
+        .map((tag) => tag.trim())
+        .filter(Boolean),
+      favorite: editor.favorite,
+      expires: editor.expires,
+      ...(editor.expires && editor.expiryTime
+        ? { expiryTime: new Date(editor.expiryTime).toISOString() }
+        : {}),
+      autoTypeEnabled: editor.autoTypeEnabled,
+      autoTypeSequence: editor.autoTypeSequence.trim() || DEFAULT_AUTO_TYPE_SEQUENCE,
+    };
+    const result = await window.passdeck.database.saveEntry(request);
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+    updateSession(result.data);
+    setEditor(null);
+    setToast(editor.entry ? 'Запись изменена' : 'Запись создана');
+  }
+
+  async function submitGroup(event: React.FormEvent): Promise<void> {
+    event.preventDefault();
+    if (!active || !groupName.trim()) {
+      return;
+    }
+    const result = await window.passdeck.database.createGroup({
+      sessionId: active.sessionId,
+      parentId: selectedGroupId,
+      name: groupName,
+    });
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+    updateSession(result.data);
+    setGroupName('');
+    setGroupModal(false);
+    setToast('Группа создана');
+  }
+
+  async function deleteEntry(): Promise<void> {
+    if (!active || !confirmDelete) {
+      return;
+    }
+    const result = await window.passdeck.database.deleteEntry(active.sessionId, confirmDelete.id);
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+    updateSession(result.data);
+    setConfirmDelete(null);
+    setSelectedEntryId(null);
+    setToast('Запись перемещена в корзину');
+  }
+
+  async function copyValue(value: string, kind: 'username' | 'password' | 'url'): Promise<void> {
+    const result = await window.passdeck.clipboard.copy({ value, kind });
+    if (!result.ok) {
+      setError(resultMessage(result));
+      return;
+    }
+    setToast(
+      kind === 'password'
+        ? 'Пароль скопирован'
+        : kind === 'username'
+          ? 'Логин скопирован'
+          : 'URL скопирован',
+    );
+  }
+
+  async function copyPassword(entry: EntrySummary): Promise<void> {
+    if (!active) {
+      return;
+    }
+    const result = await window.passdeck.database.revealPassword(active.sessionId, entry.id);
+    if (!result.ok || result.data === undefined) {
+      setError(resultMessage(result));
+      return;
+    }
+    await copyValue(result.data, 'password');
+  }
+
+  async function revealPassword(entry: EntrySummary): Promise<void> {
+    if (!active) {
+      return;
+    }
+    if (revealed?.entryId === entry.id) {
+      setRevealed(null);
+      return;
+    }
+    const result = await window.passdeck.database.revealPassword(active.sessionId, entry.id);
+    if (!result.ok || result.data === undefined) {
+      setError(resultMessage(result));
+      return;
+    }
+    setRevealed({ entryId: entry.id, value: result.data });
+    if (revealTimer.current) {
+      window.clearTimeout(revealTimer.current);
+    }
+    revealTimer.current = window.setTimeout(() => setRevealed(null), 10_000);
+  }
+
+  async function updateSettings(patch: Partial<AppSettings>): Promise<void> {
+    const next = await window.passdeck.settings.update(patch);
+    setSettings(next);
+  }
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const ctrl = event.ctrlKey || event.metaKey;
+      if (!ctrl) {
+        return;
+      }
+      if (event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        void saveActive();
+      } else if (event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        document.querySelector<HTMLInputElement>('#search-input')?.focus();
+      } else if (event.key.toLowerCase() === 'n') {
+        event.preventDefault();
+        beginEdit();
+      } else if (event.shiftKey && event.key.toLowerCase() === 'l') {
+        event.preventDefault();
+        void lockActive();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  });
+
+  if (!settings) {
+    return (
+      <div className="loading">
+        <Logo />
+        <span>Инициализация защищённого хранилища…</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <Logo />
+        <div className="topbar__actions">
+          <button className="button button--ghost" type="button" onClick={() => void chooseOpen()}>
+            Открыть
+          </button>
+          <button
+            className="button button--primary"
+            type="button"
+            onClick={() => void chooseCreate()}
+          >
+            Новая база
+          </button>
+          <button
+            className="icon-button"
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            title="Настройки"
+          >
+            ⚙
+          </button>
+        </div>
+      </header>
+
+      {sessions.length > 0 ? (
+        <nav className="tabs" aria-label="Открытые базы">
+          {sessions.map((session) => (
+            <button
+              key={session.sessionId}
+              className={`tab ${session.sessionId === active?.sessionId ? 'tab--active' : ''}`}
+              type="button"
+              onClick={() => activateSession(session)}
+            >
+              <span className={`status-dot ${session.locked ? 'status-dot--locked' : ''}`} />
+              <span className="tab__name">{session.name}</span>
+              {session.dirty ? <span className="tab__dirty">●</span> : null}
+              {session.readOnly ? <span className="tab__readonly">RO</span> : null}
+              <span
+                className="tab__close"
+                role="button"
+                tabIndex={0}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void closeSession(session.sessionId);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    void closeSession(session.sessionId);
+                  }
+                }}
+              >
+                ×
+              </span>
+            </button>
+          ))}
+        </nav>
+      ) : null}
+
+      {!active ? (
+        <main className="welcome">
+          <div className="welcome__panel">
+            <Logo />
+            <h1>Локальный менеджер паролей</h1>
+            <p>
+              PassDeck работает с файлами KeePass <strong>.kdbx</strong>, не использует облако,
+              телеметрию и сетевую синхронизацию.
+            </p>
+            <div className="welcome__actions">
+              <button
+                className="button button--primary button--large"
+                type="button"
+                onClick={() => void chooseOpen()}
+              >
+                Открыть базу
+              </button>
+              <button
+                className="button button--secondary button--large"
+                type="button"
+                onClick={() => void chooseCreate()}
+              >
+                Создать новую
+              </button>
+            </div>
+            {settings.recentDatabases.length > 0 ? (
+              <section className="recent">
+                <h3>Последние базы</h3>
+                {settings.recentDatabases.map((filePath) => (
+                  <button
+                    key={filePath}
+                    type="button"
+                    className="recent__item"
+                    onClick={() => openRecent(filePath)}
+                  >
+                    <span>◈</span>
+                    <div>
+                      <strong>{basename(filePath)}</strong>
+                      <small>{filePath}</small>
+                    </div>
+                  </button>
+                ))}
+              </section>
+            ) : null}
+          </div>
+        </main>
+      ) : active.locked ? (
+        <main className="locked-view">
+          <div className="locked-card">
+            <div className="locked-card__icon">◆</div>
+            <span className="eyebrow">Заблокированная база</span>
+            <h1>{active.name}</h1>
+            <p>{active.path}</p>
+            <button
+              className="button button--primary button--large"
+              type="button"
+              onClick={() => setUnlockTarget({ sessionId: active.sessionId })}
+            >
+              Разблокировать
+            </button>
+          </div>
+        </main>
+      ) : (
+        <main className="workspace">
+          <aside className="sidebar panel">
+            <div className="panel__header">
+              <div>
+                <span className="eyebrow">Структура</span>
+                <h2>Группы</h2>
+              </div>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => setGroupModal(true)}
+                title="Новая группа"
+              >
+                +
+              </button>
+            </div>
+            <div className="group-list">
+              <button
+                className={`group-row ${selectedGroupId === null ? 'group-row--active' : ''}`}
+                type="button"
+                onClick={() => setSelectedGroupId(null)}
+              >
+                <span>▦</span>
+                <strong>Все записи</strong>
+                <em>{active.entries.length}</em>
+              </button>
+              {active.groups.map((group) => (
+                <button
+                  key={group.id}
+                  className={`group-row ${selectedGroupId === group.id ? 'group-row--active' : ''}`}
+                  style={{ paddingLeft: 14 + group.depth * 18 }}
+                  type="button"
+                  onClick={() => {
+                    setSelectedGroupId(group.id);
+                    setSelectedEntryId(null);
+                  }}
+                >
+                  <span>{group.depth === 0 ? '◇' : '›'}</span>
+                  <strong>{group.name}</strong>
+                  <em>{active.entries.filter((entry) => entry.groupId === group.id).length}</em>
+                </button>
+              ))}
+            </div>
+            <div className="sidebar__footer">
+              <span>{basename(active.path)}</span>
+              <small>{active.readOnly ? 'Только чтение' : 'Локальный файл'}</small>
+            </div>
+          </aside>
+
+          <section className="entry-list panel">
+            <div className="entry-toolbar">
+              <label className="search-box">
+                <span>⌕</span>
+                <input
+                  id="search-input"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Поиск в текущей базе"
+                />
+                {search ? (
+                  <button type="button" onClick={() => setSearch('')}>
+                    ×
+                  </button>
+                ) : null}
+              </label>
+              <button
+                className="button button--primary"
+                type="button"
+                onClick={() => beginEdit()}
+                disabled={active.readOnly}
+              >
+                + Запись
+              </button>
+            </div>
+            <div className="list-heading">
+              <div>
+                <span className="eyebrow">Записи</span>
+                <h2>{filteredEntries.length} элементов</h2>
+              </div>
+              <div className="list-heading__actions">
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={() => void saveActive()}
+                  title="Сохранить"
+                  disabled={active.readOnly}
+                >
+                  ↓
+                </button>
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={() => void lockActive()}
+                  title="Заблокировать"
+                >
+                  ◈
+                </button>
+              </div>
+            </div>
+            <div className="entries">
+              {filteredEntries.length === 0 ? (
+                <div className="empty-state">
+                  <span>◇</span>
+                  <strong>Записей не найдено</strong>
+                  <p>Создайте новую запись или измените фильтр.</p>
+                </div>
+              ) : (
+                filteredEntries.map((entry) => (
+                  <button
+                    key={entry.id}
+                    className={`entry-row ${selectedEntryId === entry.id ? 'entry-row--active' : ''}`}
+                    type="button"
+                    onClick={() => {
+                      setSelectedEntryId(entry.id);
+                      setRevealed(null);
+                    }}
+                  >
+                    <div className="entry-avatar">
+                      {entry.title.slice(0, 1).toLocaleUpperCase()}
+                    </div>
+                    <div className="entry-row__main">
+                      <div>
+                        <strong>{entry.title}</strong>
+                        {entry.favorite ? <span className="favorite">★</span> : null}
+                      </div>
+                      <span>{entry.username || 'Логин не указан'}</span>
+                    </div>
+                    <div className="entry-row__meta">
+                      <span>
+                        {entry.url ? entry.url.replace(/^https?:\/\//, '').split('/')[0] : '—'}
+                      </span>
+                      {entry.tags.length > 0 ? (
+                        <small>{entry.tags.slice(0, 2).join(' · ')}</small>
+                      ) : null}
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          </section>
+
+          <aside className="details panel">
+            {!selectedEntry ? (
+              <div className="details-placeholder">
+                <div>◇</div>
+                <h2>Выберите запись</h2>
+                <p>Здесь появятся логин, URL, заметки и действия с паролем.</p>
+              </div>
+            ) : (
+              <>
+                <div className="details__header">
+                  <div className="entry-avatar entry-avatar--large">
+                    {selectedEntry.title.slice(0, 1).toLocaleUpperCase()}
+                  </div>
+                  <div>
+                    <span className="eyebrow">Запись</span>
+                    <h2>{selectedEntry.title}</h2>
+                  </div>
+                  {selectedEntry.favorite ? (
+                    <span className="favorite favorite--large">★</span>
+                  ) : null}
+                </div>
+
+                <div className="field-stack">
+                  <DetailField
+                    label="Логин"
+                    value={selectedEntry.username || '—'}
+                    onCopy={() => void copyValue(selectedEntry.username, 'username')}
+                  />
+                  <div className="detail-field">
+                    <label>Пароль</label>
+                    <div className="secret-value">
+                      <code>
+                        {revealed?.entryId === selectedEntry.id ? revealed.value : '••••••••••••'}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={() => void revealPassword(selectedEntry)}
+                        title="Показать на 10 секунд"
+                      >
+                        ◉
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void copyPassword(selectedEntry)}
+                        title="Копировать пароль"
+                      >
+                        ▣
+                      </button>
+                    </div>
+                  </div>
+                  <DetailField
+                    label="URL"
+                    value={selectedEntry.url || '—'}
+                    onCopy={() => void copyValue(selectedEntry.url, 'url')}
+                    {...(selectedEntry.url
+                      ? {
+                          onOpen: () => {
+                            window.open(selectedEntry.url, '_blank', 'noopener,noreferrer');
+                          },
+                        }
+                      : {})}
+                  />
+                </div>
+
+                {selectedEntry.tags.length > 0 ? (
+                  <div className="tag-list">
+                    {selectedEntry.tags.map((tag) => (
+                      <span key={tag}>{tag}</span>
+                    ))}
+                  </div>
+                ) : null}
+
+                <section className="notes">
+                  <label>Заметки</label>
+                  <p>{selectedEntry.notes || 'Заметки отсутствуют.'}</p>
+                </section>
+
+                <div className="details__footer">
+                  <button
+                    className="button button--secondary"
+                    type="button"
+                    onClick={() => beginEdit(selectedEntry)}
+                    disabled={active.readOnly}
+                  >
+                    Редактировать
+                  </button>
+                  <button
+                    className="button button--danger"
+                    type="button"
+                    onClick={() => setConfirmDelete(selectedEntry)}
+                    disabled={active.readOnly}
+                  >
+                    Удалить
+                  </button>
+                </div>
+              </>
+            )}
+          </aside>
+        </main>
+      )}
+
+      {unlockTarget ? (
+        <Modal
+          title="Разблокировка базы"
+          onClose={() => {
+            setUnlockTarget(null);
+            setOpenQueue([]);
+            setUnlockPassword('');
+          }}
+        >
+          <form className="form" onSubmit={(event) => void submitUnlock(event)}>
+            <div className="file-chip">
+              {unlockTarget.path ? basename(unlockTarget.path) : active?.name}
+            </div>
+            <label>
+              <span>Мастер-пароль</span>
+              <input
+                type="password"
+                value={unlockPassword}
+                onChange={(event) => setUnlockPassword(event.target.value)}
+                autoFocus
+                autoComplete="current-password"
+                placeholder="Введите мастер-пароль"
+              />
+            </label>
+            <div className="form__actions">
+              <button
+                className="button button--ghost"
+                type="button"
+                onClick={() => {
+                  setUnlockTarget(null);
+                  setOpenQueue([]);
+                }}
+              >
+                Отмена
+              </button>
+              <button className="button button--primary" type="submit" disabled={!unlockPassword}>
+                Открыть
+              </button>
+            </div>
+          </form>
+        </Modal>
+      ) : null}
+
+      {createTarget ? (
+        <Modal title="Новая база KDBX" onClose={() => setCreateTarget(null)}>
+          <form className="form" onSubmit={(event) => void submitCreate(event)}>
+            <div className="file-chip">{createTarget}</div>
+            <label>
+              <span>Название базы</span>
+              <input
+                value={createName}
+                onChange={(event) => setCreateName(event.target.value)}
+                autoFocus
+              />
+            </label>
+            <label>
+              <span>Мастер-пароль</span>
+              <input
+                type="password"
+                value={createPassword}
+                onChange={(event) => setCreatePassword(event.target.value)}
+                autoComplete="new-password"
+              />
+            </label>
+            <label>
+              <span>Повторите пароль</span>
+              <input
+                type="password"
+                value={createConfirm}
+                onChange={(event) => setCreateConfirm(event.target.value)}
+                autoComplete="new-password"
+              />
+            </label>
+            <p className="form__hint">
+              Минимум 8 символов. Восстановить забытый мастер-пароль невозможно.
+            </p>
+            <div className="form__actions">
+              <button
+                className="button button--ghost"
+                type="button"
+                onClick={() => setCreateTarget(null)}
+              >
+                Отмена
+              </button>
+              <button className="button button--primary" type="submit">
+                Создать
+              </button>
+            </div>
+          </form>
+        </Modal>
+      ) : null}
+
+      {editor && active ? (
+        <Modal
+          title={editor.entry ? 'Редактирование записи' : 'Новая запись'}
+          width={680}
+          onClose={() => setEditor(null)}
+        >
+          <form className="form form--grid" onSubmit={(event) => void submitEntry(event)}>
+            <label className="span-2">
+              <span>Название</span>
+              <input
+                value={editor.title}
+                onChange={(event) => setEditor({ ...editor, title: event.target.value })}
+                autoFocus
+              />
+            </label>
+            <label>
+              <span>Логин</span>
+              <input
+                value={editor.username}
+                onChange={(event) => setEditor({ ...editor, username: event.target.value })}
+              />
+            </label>
+            <label>
+              <span>{editor.entry ? 'Новый пароль (необязательно)' : 'Пароль'}</span>
+              <input
+                type="password"
+                value={editor.password}
+                onChange={(event) => setEditor({ ...editor, password: event.target.value })}
+              />
+            </label>
+            <label className="span-2">
+              <span>URL</span>
+              <input
+                value={editor.url}
+                onChange={(event) => setEditor({ ...editor, url: event.target.value })}
+                placeholder="https://"
+              />
+            </label>
+            <label className="span-2">
+              <span>Теги через запятую</span>
+              <input
+                value={editor.tags}
+                onChange={(event) => setEditor({ ...editor, tags: event.target.value })}
+              />
+            </label>
+            <label className="span-2">
+              <span>Группа</span>
+              <select
+                value={editor.groupId}
+                onChange={(event) => setEditor({ ...editor, groupId: event.target.value })}
+              >
+                {active.groups.map((group) => (
+                  <option key={group.id} value={group.id}>
+                    {'—'.repeat(group.depth)} {group.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="span-2">
+              <span>Заметки</span>
+              <textarea
+                rows={6}
+                value={editor.notes}
+                onChange={(event) => setEditor({ ...editor, notes: event.target.value })}
+              />
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={editor.favorite}
+                onChange={(event) => setEditor({ ...editor, favorite: event.target.checked })}
+              />
+              <span>Избранное</span>
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={editor.expires}
+                onChange={(event) => setEditor({ ...editor, expires: event.target.checked })}
+              />
+              <span>Срок действия</span>
+            </label>
+            {editor.expires ? (
+              <label className="span-2">
+                <span>Дата окончания</span>
+                <input
+                  type="date"
+                  value={editor.expiryTime}
+                  onChange={(event) => setEditor({ ...editor, expiryTime: event.target.value })}
+                />
+              </label>
+            ) : null}
+            <label className="check span-2">
+              <input
+                type="checkbox"
+                checked={editor.autoTypeEnabled}
+                onChange={(event) =>
+                  setEditor({ ...editor, autoTypeEnabled: event.target.checked })
+                }
+              />
+              <span>Разрешить Auto-Type для этой записи</span>
+            </label>
+            {editor.autoTypeEnabled ? (
+              <label className="span-2">
+                <span>Последовательность Auto-Type</span>
+                <input
+                  value={editor.autoTypeSequence}
+                  onChange={(event) =>
+                    setEditor({ ...editor, autoTypeSequence: event.target.value })
+                  }
+                  placeholder={DEFAULT_AUTO_TYPE_SEQUENCE}
+                />
+                <small className="form__hint">
+                  Доступны: {'{USERNAME}'}, {'{PASSWORD}'}, {'{URL}'}, {'{TAB}'}, {'{ENTER}'},
+                  {' {DELAY=500}'}.
+                </small>
+              </label>
+            ) : null}
+            <div className="form__actions span-2">
+              <button
+                className="button button--ghost"
+                type="button"
+                onClick={() => setEditor(null)}
+              >
+                Отмена
+              </button>
+              <button className="button button--primary" type="submit">
+                Сохранить запись
+              </button>
+            </div>
+          </form>
+        </Modal>
+      ) : null}
+
+      {groupModal ? (
+        <Modal title="Новая группа" onClose={() => setGroupModal(false)}>
+          <form className="form" onSubmit={(event) => void submitGroup(event)}>
+            <label>
+              <span>Название группы</span>
+              <input
+                value={groupName}
+                onChange={(event) => setGroupName(event.target.value)}
+                autoFocus
+              />
+            </label>
+            <div className="form__actions">
+              <button
+                className="button button--ghost"
+                type="button"
+                onClick={() => setGroupModal(false)}
+              >
+                Отмена
+              </button>
+              <button className="button button--primary" type="submit">
+                Создать
+              </button>
+            </div>
+          </form>
+        </Modal>
+      ) : null}
+
+      {settingsOpen ? (
+        <Modal title="Настройки" onClose={() => setSettingsOpen(false)}>
+          <div className="form">
+            <label>
+              <span>Тема</span>
+              <select
+                value={settings.theme}
+                onChange={(event) =>
+                  void updateSettings({ theme: event.target.value as AppSettings['theme'] })
+                }
+              >
+                <option value="dark">Тёмная</option>
+                <option value="light">Светлая</option>
+                <option value="system">Системная</option>
+              </select>
+            </label>
+            <label>
+              <span>Автоблокировка, минут (0 — отключить)</span>
+              <input
+                type="number"
+                min="0"
+                max="1440"
+                value={settings.autoLockMinutes}
+                onChange={(event) =>
+                  void updateSettings({ autoLockMinutes: Number(event.target.value) })
+                }
+              />
+            </label>
+            <label>
+              <span>Очистка пароля из буфера, секунд</span>
+              <input
+                type="number"
+                min="0"
+                max="3600"
+                value={settings.clipboardPasswordSeconds}
+                onChange={(event) =>
+                  void updateSettings({ clipboardPasswordSeconds: Number(event.target.value) })
+                }
+              />
+            </label>
+            <label>
+              <span>Закрытие окна</span>
+              <select
+                value={settings.closeBehavior}
+                onChange={(event) =>
+                  void updateSettings({
+                    closeBehavior: event.target.value as AppSettings['closeBehavior'],
+                  })
+                }
+              >
+                <option value="quit">Завершать приложение</option>
+                <option value="tray">Сворачивать в трей</option>
+              </select>
+            </label>
+            <div className="security-note">
+              <strong>Локальный режим</strong>
+              <span>Сеть, телеметрия и журналирование отключены.</span>
+            </div>
+            <div className="form__actions">
+              <button
+                className="button button--primary"
+                type="button"
+                onClick={() => setSettingsOpen(false)}
+              >
+                Готово
+              </button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+
+      {confirmDelete ? (
+        <Modal title="Удалить запись?" onClose={() => setConfirmDelete(null)}>
+          <p className="confirm-text">
+            Запись «{confirmDelete.title}» будет перемещена в корзину базы.
+          </p>
+          <div className="form__actions">
+            <button
+              className="button button--ghost"
+              type="button"
+              onClick={() => setConfirmDelete(null)}
+            >
+              Отмена
+            </button>
+            <button
+              className="button button--danger"
+              type="button"
+              onClick={() => void deleteEntry()}
+            >
+              Удалить
+            </button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {error ? (
+        <Modal title="Ошибка" onClose={() => setError(null)}>
+          <pre className="error-text">{error}</pre>
+          <div className="form__actions">
+            <button className="button button--primary" type="button" onClick={() => setError(null)}>
+              Закрыть
+            </button>
+          </div>
+        </Modal>
+      ) : null}
+      {toast ? (
+        <div className="toast" onAnimationEnd={() => setToast(null)}>
+          {toast}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function DetailField({
+  label,
+  value,
+  onCopy,
+  onOpen,
+}: {
+  label: string;
+  value: string;
+  onCopy?: () => void;
+  onOpen?: () => void;
+}) {
+  return (
+    <div className="detail-field">
+      <label>{label}</label>
+      <div>
+        <span className="truncate">{value}</span>
+        {onOpen ? (
+          <button type="button" onClick={onOpen} title="Открыть">
+            ↗
+          </button>
+        ) : null}
+        {onCopy && value !== '—' ? (
+          <button type="button" onClick={onCopy} title="Копировать">
+            ▣
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}

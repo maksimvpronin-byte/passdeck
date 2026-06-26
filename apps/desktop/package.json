@@ -1,0 +1,48 @@
+{
+  "name": "@passdeck/desktop",
+  "version": "0.1.2",
+  "private": true,
+  "description": "PassDeck desktop application",
+  "license": "MIT",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true});require('fs').rmSync('release',{recursive:true,force:true})\"",
+    "dev": "concurrently -k -n MAIN,RENDERER,ELECTRON \"npm:dev:main\" \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:main": "tsc -p tsconfig.main.json --watch --preserveWatchOutput",
+    "dev:renderer": "vite --host 127.0.0.1",
+    "dev:electron": "wait-on tcp:5173 dist/main/index.js && cross-env NODE_ENV=development VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron dist/main/index.js",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:renderer": "vite build",
+    "build": "npm run clean && npm run build:main && npm run build:renderer",
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "lint": "eslint src vite.config.ts --max-warnings=0",
+    "test": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest --config vitest.config.ts",
+    "package:win": "npm run build && electron-builder --config electron-builder.yml --win portable --x64 --publish never",
+    "package:mac": "npm run build && electron-builder --config electron-builder.yml --mac dmg zip --arm64 --publish never"
+  },
+  "dependencies": {
+    "@passdeck/shared": "0.1.2",
+    "hash-wasm": "4.12.0",
+    "kdbxweb": "2.1.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.11",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "concurrently": "10.0.3",
+    "cross-env": "10.0.0",
+    "electron": "42.5.0",
+    "electron-builder": "26.15.3",
+    "vite": "8.1.0",
+    "vitest": "4.1.9",
+    "wait-on": "8.0.4"
+  },
+  "build": {
+    "appId": "com.maksimpronin.passdeck",
+    "productName": "PassDeck"
+  },
+  "author": "Maxim Pronin"
+}

@@ -1,0 +1,44 @@
+appId: com.maksimpronin.passdeck
+productName: PassDeck
+copyright: Copyright © 2026 Maxim Pronin
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - package.json
+  - node_modules/**/*
+  - ../../node_modules/kdbxweb/**/*
+  - ../../node_modules/hash-wasm/**/*
+  - ../../node_modules/@passdeck/shared/**/*
+asar: true
+extraResources:
+  - from: build/icon.png
+    to: icon.png
+asarUnpack:
+  - '**/node_modules/hash-wasm/dist/*.wasm'
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+  artifactName: PassDeck-Portable-${version}-${arch}.${ext}
+  icon: build/icon.ico
+  signAndEditExecutable: false
+portable:
+  artifactName: PassDeck-Portable-${version}-${arch}.${ext}
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+    - target: zip
+      arch:
+        - arm64
+  artifactName: PassDeck-${version}-${arch}.${ext}
+  category: public.app-category.productivity
+  icon: build/icon.icns
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  identity: null
+publish: null

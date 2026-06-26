@@ -1,65 +1,56 @@
 # Roadmap PassDeck
 
-## 0.1.0 — рабочий каркас
+## 0.1.x — базовый каркас
 
-- [x] Electron/React/TypeScript/Vite;
-- [x] portable settings;
+- [x] Electron, React, TypeScript и Vite;
 - [x] KDBX create/open/save;
-- [x] KDBX 4.1 + Argon2id;
-- [x] вкладки;
+- [x] KDBX 4.1, AES-256 и Argon2id;
+- [x] вкладки баз;
 - [x] группы и записи;
-- [x] lock/read-only/external change;
-- [x] две резервные копии;
-- [x] clipboard timers;
-- [x] basic tray;
-- [x] unit/integration tests;
-- [x] Windows/macOS build configs.
+- [x] lock/read-only/external-change protection;
+- [x] атомарное сохранение и две резервные копии;
+- [x] portable settings;
+- [x] clipboard timers, tray и автоблокировка;
+- [x] Windows Auto-Type;
+- [x] Windows/macOS build-конфигурации.
 
-## 0.2.0 — полнота KDBX UI
+## 0.2.0 — завершено
 
-- [ ] пользовательские поля;
-- [ ] вложения;
-- [ ] история записей;
-- [ ] пользовательские иконки;
-- [ ] полноценная корзина и восстановление;
-- [ ] перенос групп/записей;
-- [ ] Save As и conflict UI.
+- [x] пользовательские поля;
+- [x] защищённые пользовательские поля;
+- [x] редактирование существующего пароля;
+- [x] вложения;
+- [x] drag-and-drop записей между группами;
+- [x] Auto-Type без принудительной активации или изменения размера окна;
+- [x] единый Windows portable-сборщик;
+- [x] единственный итоговый EXE в `release`.
 
-## 0.3.0 — безопасность и удобство
+Не входят в продуктовый интерфейс:
 
-- [ ] генератор паролей;
-- [ ] аудит слабых/повторяющихся/просроченных записей;
-- [ ] recovery-копии;
-- [ ] смена мастер-пароля;
-- [ ] Argon2 calibration;
-- [ ] worker thread/utility process;
-- [ ] быстрые фильтры;
-- [ ] глобальный поиск.
+- история версий записей;
+- корзина и восстановление удалённых записей;
+- перенос групп;
+- кнопки и модальные окна перемещения;
+- `Save As`.
 
-## 0.4.0 — перенос данных и Auto-Type
+## Следующие версии
 
-- [ ] CSV import KeePass/Chrome/Edge/Firefox;
-- [ ] CSV export с предупреждением;
-- [ ] import preview/mapping/report;
-- [x] Auto-Type Windows;
-- [x] глобальная горячая клавиша `Ctrl+Alt+A`;
-- [x] мгновенный ввод в активное окно без подтверждения.
+Приоритеты будут утверждаться отдельно перед началом разработки:
 
-## 0.5.0 — macOS
-
-- [ ] Apple Silicon `.app/.dmg/.zip`;
-- [ ] Accessibility Auto-Type;
-- [ ] Keychain;
-- [ ] Touch ID;
-- [ ] Gatekeeper UX;
-- [ ] подготовка signing/notarization;
-- [ ] Intel x64.
+- генератор паролей;
+- аудит слабых, повторяющихся и просроченных паролей;
+- пользовательские иконки;
+- recovery-копии;
+- смена мастер-пароля;
+- импорт и экспорт;
+- локализация;
+- Playwright E2E;
+- macOS и Touch ID.
 
 ## 1.0.0
 
-- [ ] полный E2E suite;
 - [ ] compatibility suite KeePass/KeePassXC;
-- [ ] performance tests 20 000 записей;
+- [ ] performance tests для крупных баз;
 - [ ] security review;
-- [ ] документация пользователя;
-- [ ] стабильные Windows/macOS сборки.
+- [ ] пользовательская документация;
+- [ ] стабильные Windows и macOS сборки.

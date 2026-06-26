@@ -20,11 +20,21 @@ const api: PassDeckApi = {
     deleteEntry: (sessionId, entryId) =>
       ipcRenderer.invoke('database:delete-entry', sessionId, entryId),
     createGroup: (request) => ipcRenderer.invoke('database:create-group', request),
+    moveEntry: (request) => ipcRenderer.invoke('database:move-entry', request),
+    moveGroup: (request) => ipcRenderer.invoke('database:move-group', request),
     lock: (sessionId) => ipcRenderer.invoke('database:lock', sessionId),
     unlock: (sessionId, password) => ipcRenderer.invoke('database:unlock', sessionId, password),
     close: (sessionId) => ipcRenderer.invoke('database:close', sessionId),
     revealPassword: (sessionId, entryId) =>
       ipcRenderer.invoke('database:reveal-password', sessionId, entryId),
+    revealCustomField: (sessionId, entryId, key) =>
+      ipcRenderer.invoke('database:reveal-custom-field', sessionId, entryId, key),
+    addAttachments: (sessionId, entryId) =>
+      ipcRenderer.invoke('database:add-attachments', sessionId, entryId),
+    exportAttachment: (sessionId, entryId, name) =>
+      ipcRenderer.invoke('database:export-attachment', sessionId, entryId, name),
+    deleteAttachment: (sessionId, entryId, name) =>
+      ipcRenderer.invoke('database:delete-attachment', sessionId, entryId, name),
   },
 
   autoType: {

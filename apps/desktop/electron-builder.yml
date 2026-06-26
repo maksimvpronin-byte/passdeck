@@ -1,8 +1,8 @@
 appId: com.maksimpronin.passdeck
 productName: PassDeck
-copyright: Copyright © 2026 Maxim Pronin
+copyright: Copyright В© 2026 Maxim Pronin
 directories:
-  output: release
+  output: ../../release
   buildResources: build
 files:
   - dist/**/*
@@ -24,7 +24,7 @@ win:
         - x64
   artifactName: PassDeck-Portable-${version}-${arch}.${ext}
   icon: build/icon.ico
-  signAndEditExecutable: false
+  signExecutable: false
 portable:
   artifactName: PassDeck-Portable-${version}-${arch}.${ext}
 mac:

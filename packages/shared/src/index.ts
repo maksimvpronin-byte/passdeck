@@ -23,6 +23,26 @@ export interface AppSettings {
 
 export const DEFAULT_AUTO_TYPE_SEQUENCE = '{USERNAME}{TAB}{PASSWORD}{ENTER}';
 
+export interface CustomFieldSummary {
+  key: string;
+  value: string;
+  protected: boolean;
+  hasValue: boolean;
+}
+
+export interface CustomFieldInput {
+  key: string;
+  value?: string;
+  protected: boolean;
+  preserveValue?: boolean;
+  originalKey?: string;
+}
+
+export interface AttachmentSummary {
+  name: string;
+  size: number;
+}
+
 export interface EntrySummary {
   id: string;
   groupId: string;
@@ -35,7 +55,8 @@ export interface EntrySummary {
   expires: boolean;
   expiryTime?: string;
   modifiedAt?: string;
-  customFields: Array<{ key: string; value: string; protected: boolean }>;
+  customFields: CustomFieldSummary[];
+  attachments: AttachmentSummary[];
   autoTypeEnabled: boolean;
   autoTypeSequence: string;
 }
@@ -85,7 +106,7 @@ export interface SaveEntryRequest {
   favorite: boolean;
   expires: boolean;
   expiryTime?: string;
-  customFields?: Array<{ key: string; value: string; protected: boolean }>;
+  customFields?: CustomFieldInput[];
   autoTypeEnabled?: boolean;
   autoTypeSequence?: string;
 }
@@ -96,9 +117,21 @@ export interface CreateGroupRequest {
   name: string;
 }
 
+export interface MoveEntryRequest {
+  sessionId: string;
+  entryId: string;
+  targetGroupId: string;
+}
+
+export interface MoveGroupRequest {
+  sessionId: string;
+  groupId: string;
+  targetGroupId: string;
+}
+
 export interface CopySecretRequest {
   value: string;
-  kind: 'password' | 'username' | 'url';
+  kind: 'password' | 'username' | 'url' | 'custom';
 }
 
 export interface ApiResult<T> {
@@ -129,10 +162,20 @@ export interface PassDeckApi {
     saveEntry(request: SaveEntryRequest): Promise<ApiResult<DatabaseView>>;
     deleteEntry(sessionId: string, entryId: string): Promise<ApiResult<DatabaseView>>;
     createGroup(request: CreateGroupRequest): Promise<ApiResult<DatabaseView>>;
+    moveEntry(request: MoveEntryRequest): Promise<ApiResult<DatabaseView>>;
+    moveGroup(request: MoveGroupRequest): Promise<ApiResult<DatabaseView>>;
     lock(sessionId: string): Promise<ApiResult<DatabaseView>>;
     unlock(sessionId: string, password: string): Promise<ApiResult<DatabaseView>>;
     close(sessionId: string): Promise<ApiResult<null>>;
     revealPassword(sessionId: string, entryId: string): Promise<ApiResult<string>>;
+    revealCustomField(sessionId: string, entryId: string, key: string): Promise<ApiResult<string>>;
+    addAttachments(sessionId: string, entryId: string): Promise<ApiResult<DatabaseView>>;
+    exportAttachment(sessionId: string, entryId: string, name: string): Promise<ApiResult<boolean>>;
+    deleteAttachment(
+      sessionId: string,
+      entryId: string,
+      name: string,
+    ): Promise<ApiResult<DatabaseView>>;
   };
   autoType: {
     setSelection(sessionId: string | null, entryId: string | null): Promise<ApiResult<null>>;

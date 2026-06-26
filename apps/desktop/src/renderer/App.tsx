@@ -1,8 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_AUTO_TYPE_SEQUENCE } from '@passdeck/shared';
-import type { AppSettings, DatabaseView, EntrySummary, SaveEntryRequest } from '@passdeck/shared';
+import type {
+  AppSettings,
+  CustomFieldInput,
+  DatabaseView,
+  EntrySummary,
+  SaveEntryRequest,
+} from '@passdeck/shared';
 import { Logo } from './components/Logo';
 import { Modal } from './components/Modal';
+
+type EditorCustomField = {
+  id: string;
+  key: string;
+  value: string;
+  protected: boolean;
+  preserveValue: boolean;
+  hasStoredValue: boolean;
+  originalKey?: string;
+};
 
 type EditorState = {
   entry?: EntrySummary;
@@ -10,14 +26,15 @@ type EditorState = {
   title: string;
   username: string;
   password: string;
+  passwordVisible: boolean;
+  passwordLoaded: boolean;
   url: string;
   notes: string;
   tags: string;
   favorite: boolean;
   expires: boolean;
   expiryTime: string;
-  autoTypeEnabled: boolean;
-  autoTypeSequence: string;
+  customFields: EditorCustomField[];
 };
 
 const emptyEditor = (groupId: string): EditorState => ({
@@ -25,18 +42,49 @@ const emptyEditor = (groupId: string): EditorState => ({
   title: '',
   username: '',
   password: '',
+  passwordVisible: false,
+  passwordLoaded: true,
   url: '',
   notes: '',
   tags: '',
   favorite: false,
   expires: false,
   expiryTime: '',
-  autoTypeEnabled: true,
-  autoTypeSequence: DEFAULT_AUTO_TYPE_SEQUENCE,
+  customFields: [],
 });
+
+const RESERVED_CUSTOM_FIELD_NAMES = new Set(['title', 'username', 'password', 'url', 'notes']);
+
+let customFieldIdSequence = 0;
+
+function createCustomFieldId(): string {
+  customFieldIdSequence += 1;
+  return `custom-field-${Date.now()}-${customFieldIdSequence}`;
+}
+
+function newCustomField(): EditorCustomField {
+  return {
+    id: createCustomFieldId(),
+    key: '',
+    value: '',
+    protected: false,
+    preserveValue: false,
+    hasStoredValue: false,
+  };
+}
 
 function basename(filePath: string): string {
   return filePath.split(/[\\/]/).pop() || filePath;
+}
+
+function formatFileSize(size: number): string {
+  if (size < 1024) {
+    return `${size} Б`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(size < 10 * 1024 ? 1 : 0)} КБ`;
+  }
+  return `${(size / (1024 * 1024)).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} МБ`;
 }
 
 function resultMessage(result: { error?: { message: string; details?: string } }): string {
@@ -64,9 +112,19 @@ export function App() {
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [groupModal, setGroupModal] = useState(false);
   const [groupName, setGroupName] = useState('');
+  const [draggingEntryId, setDraggingEntryId] = useState<string | null>(null);
+
+  const [draggingGroupId, setDraggingGroupId] = useState<string | null>(null);
+  const [dropTargetGroupId, setDropTargetGroupId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<EntrySummary | null>(null);
-  const [revealed, setRevealed] = useState<{ entryId: string; value: string } | null>(null);
+  const [confirmAttachmentDelete, setConfirmAttachmentDelete] = useState<{
+    entry: EntrySummary;
+    name: string;
+  } | null>(null);
+  const [revealed, setRevealed] = useState<{ entryId: string; key: string; value: string } | null>(
+    null,
+  );
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const revealTimer = useRef<number | null>(null);
@@ -175,7 +233,9 @@ export function App() {
           entry.url,
           entry.notes,
           entry.tags.join(' '),
-          ...entry.customFields.map((field) => `${field.key} ${field.value}`),
+          ...entry.customFields.map((field) =>
+            field.protected ? field.key : `${field.key} ${field.value}`,
+          ),
         ].some((value) => value.toLocaleLowerCase().includes(query));
       return groupMatch && queryMatch;
     });
@@ -319,16 +379,57 @@ export function App() {
             title: entry.title,
             username: entry.username,
             password: '',
+            passwordVisible: false,
+            passwordLoaded: false,
             url: entry.url,
             notes: entry.notes,
             tags: entry.tags.join(', '),
             favorite: entry.favorite,
             expires: entry.expires,
             expiryTime: entry.expiryTime?.slice(0, 10) ?? '',
-            autoTypeEnabled: entry.autoTypeEnabled,
-            autoTypeSequence: entry.autoTypeSequence,
+            customFields: entry.customFields.map((field) => ({
+              id: createCustomFieldId(),
+              key: field.key,
+              value: field.protected ? '' : field.value,
+              protected: field.protected,
+              preserveValue: field.protected,
+              hasStoredValue: field.hasValue,
+              originalKey: field.key,
+            })),
           }
         : emptyEditor(groupId),
+    );
+  }
+
+  async function toggleEditorPassword(): Promise<void> {
+    if (!active || !editor) {
+      return;
+    }
+
+    if (!editor.entry || editor.passwordLoaded || editor.password) {
+      setEditor({
+        ...editor,
+        passwordVisible: !editor.passwordVisible,
+        passwordLoaded: true,
+      });
+      return;
+    }
+
+    const result = await window.passdeck.database.revealPassword(active.sessionId, editor.entry.id);
+    if (!result.ok || result.data === undefined) {
+      setError(resultMessage(result));
+      return;
+    }
+
+    setEditor((current) =>
+      current && current.entry?.id === editor.entry?.id
+        ? {
+            ...current,
+            password: result.data ?? '',
+            passwordVisible: true,
+            passwordLoaded: true,
+          }
+        : current,
     );
   }
 
@@ -337,6 +438,39 @@ export function App() {
     if (!active || !editor) {
       return;
     }
+
+    const seenCustomFieldNames = new Set<string>();
+    const customFields: CustomFieldInput[] = [];
+    for (const field of editor.customFields) {
+      const key = field.key.trim();
+      const normalizedKey = key.toLowerCase();
+      if (!key) {
+        setError('Название пользовательского поля не может быть пустым.');
+        return;
+      }
+      if (RESERVED_CUSTOM_FIELD_NAMES.has(normalizedKey)) {
+        setError(`Имя «${key}» зарезервировано стандартным полем KDBX.`);
+        return;
+      }
+      if (seenCustomFieldNames.has(normalizedKey)) {
+        setError(`Пользовательское поле «${key}» указано несколько раз.`);
+        return;
+      }
+      seenCustomFieldNames.add(normalizedKey);
+
+      const customField: CustomFieldInput = {
+        key,
+        protected: field.protected,
+      };
+      if (field.preserveValue && field.originalKey) {
+        customField.preserveValue = true;
+        customField.originalKey = field.originalKey;
+      } else {
+        customField.value = field.value;
+      }
+      customFields.push(customField);
+    }
+
     const request: SaveEntryRequest = {
       sessionId: active.sessionId,
       ...(editor.entry ? { entryId: editor.entry.id } : {}),
@@ -355,8 +489,9 @@ export function App() {
       ...(editor.expires && editor.expiryTime
         ? { expiryTime: new Date(editor.expiryTime).toISOString() }
         : {}),
-      autoTypeEnabled: editor.autoTypeEnabled,
-      autoTypeSequence: editor.autoTypeSequence.trim() || DEFAULT_AUTO_TYPE_SEQUENCE,
+      autoTypeEnabled: true,
+      autoTypeSequence: DEFAULT_AUTO_TYPE_SEQUENCE,
+      customFields,
     };
     const result = await window.passdeck.database.saveEntry(request);
     if (!result.ok || !result.data) {
@@ -366,6 +501,35 @@ export function App() {
     updateSession(result.data);
     setEditor(null);
     setToast(editor.entry ? 'Запись изменена' : 'Запись создана');
+  }
+
+  function addCustomField(): void {
+    if (!editor) {
+      return;
+    }
+    setEditor({ ...editor, customFields: [...editor.customFields, newCustomField()] });
+  }
+
+  function updateCustomField(id: string, patch: Partial<Omit<EditorCustomField, 'id'>>): void {
+    if (!editor) {
+      return;
+    }
+    setEditor({
+      ...editor,
+      customFields: editor.customFields.map((field) =>
+        field.id === id ? { ...field, ...patch } : field,
+      ),
+    });
+  }
+
+  function removeCustomField(id: string): void {
+    if (!editor) {
+      return;
+    }
+    setEditor({
+      ...editor,
+      customFields: editor.customFields.filter((field) => field.id !== id),
+    });
   }
 
   async function submitGroup(event: React.FormEvent): Promise<void> {
@@ -388,6 +552,203 @@ export function App() {
     setToast('Группа создана');
   }
 
+  function beginEntryDrag(event: React.DragEvent, entry: EntrySummary): void {
+    if (!active || active.readOnly) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-passdeck-entry-id', entry.id);
+    event.dataTransfer.setData('text/plain', entry.id);
+    setDraggingEntryId(entry.id);
+    setDraggingGroupId(null);
+    setDropTargetGroupId(null);
+  }
+
+  function canMoveGroup(groupId: string, targetGroupId: string): boolean {
+    if (!active) {
+      return false;
+    }
+
+    const group = active.groups.find((item) => item.id === groupId);
+    const target = active.groups.find((item) => item.id === targetGroupId);
+
+    if (
+      !group ||
+      !target ||
+      group.parentId === null ||
+      group.id === target.id ||
+      group.parentId === target.id
+    ) {
+      return false;
+    }
+
+    let current: (typeof active.groups)[number] | undefined = target;
+    while (current) {
+      if (current.id === group.id) {
+        return false;
+      }
+
+      const parentId: string | null = current.parentId;
+      current = parentId
+        ? active.groups.find((item) => item.id === parentId)
+        : undefined;
+    }
+
+    return true;
+  }
+
+  function beginGroupDrag(event: React.DragEvent, groupId: string): void {
+    if (!active || active.readOnly) {
+      event.preventDefault();
+      return;
+    }
+
+    const group = active.groups.find((item) => item.id === groupId);
+    if (!group || group.parentId === null) {
+      event.preventDefault();
+      return;
+    }
+
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-passdeck-group-id', group.id);
+    event.dataTransfer.setData('text/plain', group.id);
+    setDraggingGroupId(group.id);
+    setDraggingEntryId(null);
+    setDropTargetGroupId(null);
+  }
+
+  function allowGroupDrop(event: React.DragEvent, targetGroupId: string): void {
+    if (
+      !active ||
+      active.readOnly ||
+      !draggingGroupId ||
+      !canMoveGroup(draggingGroupId, targetGroupId)
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setDropTargetGroupId(targetGroupId);
+  }
+
+  function allowTreeDrop(event: React.DragEvent, targetGroupId: string): void {
+    if (draggingGroupId) {
+      allowGroupDrop(event, targetGroupId);
+      return;
+    }
+
+    allowEntryDrop(event, targetGroupId);
+  }
+
+  function allowEntryDrop(event: React.DragEvent, groupId: string): void {
+    if (!active || active.readOnly || !draggingEntryId) {
+      return;
+    }
+    const entry = active.entries.find((item) => item.id === draggingEntryId);
+    if (!entry || entry.groupId === groupId) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setDropTargetGroupId(groupId);
+  }
+
+  async function dropEntry(event: React.DragEvent, targetGroupId: string): Promise<void> {
+    event.preventDefault();
+    if (!active || active.readOnly) {
+      return;
+    }
+    const entryId =
+      event.dataTransfer.getData('application/x-passdeck-entry-id') ||
+      event.dataTransfer.getData('text/plain') ||
+      draggingEntryId;
+    setDraggingEntryId(null);
+    setDropTargetGroupId(null);
+    if (!entryId) {
+      return;
+    }
+    const entry = active.entries.find((item) => item.id === entryId);
+    if (!entry || entry.groupId === targetGroupId) {
+      return;
+    }
+    const result = await window.passdeck.database.moveEntry({
+      sessionId: active.sessionId,
+      entryId,
+      targetGroupId,
+    });
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+    updateSession(result.data);
+    setSelectedGroupId(targetGroupId);
+    setSelectedEntryId(entryId);
+    setToast('Запись перемещена');
+  }
+
+  async function dropGroup(
+    event: React.DragEvent,
+    targetGroupId: string,
+  ): Promise<void> {
+    event.preventDefault();
+
+    if (!active || active.readOnly) {
+      return;
+    }
+
+    const groupId =
+      event.dataTransfer.getData('application/x-passdeck-group-id') ||
+      draggingGroupId;
+
+    setDraggingEntryId(null);
+    setDraggingGroupId(null);
+    setDropTargetGroupId(null);
+
+    if (!groupId || !canMoveGroup(groupId, targetGroupId)) {
+      return;
+    }
+
+    const result = await window.passdeck.database.moveGroup({
+      sessionId: active.sessionId,
+      groupId,
+      targetGroupId,
+    });
+
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+
+    updateSession(result.data);
+    setSelectedGroupId(groupId);
+    setSelectedEntryId(null);
+    setToast('Группа перемещена');
+  }
+
+  async function dropOnGroup(
+    event: React.DragEvent,
+    targetGroupId: string,
+  ): Promise<void> {
+    const groupId =
+      event.dataTransfer.getData('application/x-passdeck-group-id') ||
+      draggingGroupId;
+
+    if (groupId) {
+      await dropGroup(event, targetGroupId);
+      return;
+    }
+
+    await dropEntry(event, targetGroupId);
+  }
+
+  function endEntryDrag(): void {
+    setDraggingEntryId(null);
+    setDraggingGroupId(null);
+    setDropTargetGroupId(null);
+  }
+
   async function deleteEntry(): Promise<void> {
     if (!active || !confirmDelete) {
       return;
@@ -400,10 +761,71 @@ export function App() {
     updateSession(result.data);
     setConfirmDelete(null);
     setSelectedEntryId(null);
-    setToast('Запись перемещена в корзину');
+    setToast('Запись удалена');
   }
 
-  async function copyValue(value: string, kind: 'username' | 'password' | 'url'): Promise<void> {
+  async function addAttachments(entry: EntrySummary): Promise<void> {
+    if (!active) {
+      return;
+    }
+    const result = await window.passdeck.database.addAttachments(active.sessionId, entry.id);
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+    updateSession(result.data);
+    setSelectedGroupId(entry.groupId);
+    setSelectedEntryId(entry.id);
+    const nextAttachmentCount = result.data.entries.find((item) => item.id === entry.id)
+      ?.attachments.length;
+    if (nextAttachmentCount !== entry.attachments.length) {
+      setToast('Вложения добавлены');
+    }
+  }
+
+  async function exportAttachment(entry: EntrySummary, name: string): Promise<void> {
+    if (!active) {
+      return;
+    }
+    const result = await window.passdeck.database.exportAttachment(
+      active.sessionId,
+      entry.id,
+      name,
+    );
+    if (!result.ok) {
+      setError(resultMessage(result));
+      return;
+    }
+    if (result.data) {
+      setToast('Вложение сохранено');
+    }
+  }
+
+  async function deleteAttachment(): Promise<void> {
+    if (!active || !confirmAttachmentDelete) {
+      return;
+    }
+    const { entry, name } = confirmAttachmentDelete;
+    const result = await window.passdeck.database.deleteAttachment(
+      active.sessionId,
+      entry.id,
+      name,
+    );
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+    updateSession(result.data);
+    setSelectedGroupId(entry.groupId);
+    setSelectedEntryId(entry.id);
+    setConfirmAttachmentDelete(null);
+    setToast('Вложение удалено');
+  }
+
+  async function copyValue(
+    value: string,
+    kind: 'username' | 'password' | 'url' | 'custom',
+  ): Promise<void> {
     const result = await window.passdeck.clipboard.copy({ value, kind });
     if (!result.ok) {
       setError(resultMessage(result));
@@ -414,7 +836,9 @@ export function App() {
         ? 'Пароль скопирован'
         : kind === 'username'
           ? 'Логин скопирован'
-          : 'URL скопирован',
+          : kind === 'custom'
+            ? 'Значение поля скопировано'
+            : 'URL скопирован',
     );
   }
 
@@ -434,7 +858,7 @@ export function App() {
     if (!active) {
       return;
     }
-    if (revealed?.entryId === entry.id) {
+    if (revealed?.entryId === entry.id && revealed.key === 'Password') {
       setRevealed(null);
       return;
     }
@@ -443,7 +867,55 @@ export function App() {
       setError(resultMessage(result));
       return;
     }
-    setRevealed({ entryId: entry.id, value: result.data });
+    setRevealed({ entryId: entry.id, key: 'Password', value: result.data });
+    if (revealTimer.current) {
+      window.clearTimeout(revealTimer.current);
+    }
+    revealTimer.current = window.setTimeout(() => setRevealed(null), 10_000);
+  }
+
+  async function copyCustomField(entry: EntrySummary, key: string): Promise<void> {
+    if (!active) {
+      return;
+    }
+    const field = entry.customFields.find((item) => item.key === key);
+    if (!field) {
+      return;
+    }
+    if (!field.protected) {
+      await copyValue(field.value, 'custom');
+      return;
+    }
+    const result = await window.passdeck.database.revealCustomField(
+      active.sessionId,
+      entry.id,
+      key,
+    );
+    if (!result.ok || result.data === undefined) {
+      setError(resultMessage(result));
+      return;
+    }
+    await copyValue(result.data, 'custom');
+  }
+
+  async function revealCustomField(entry: EntrySummary, key: string): Promise<void> {
+    if (!active) {
+      return;
+    }
+    if (revealed?.entryId === entry.id && revealed.key === key) {
+      setRevealed(null);
+      return;
+    }
+    const result = await window.passdeck.database.revealCustomField(
+      active.sessionId,
+      entry.id,
+      key,
+    );
+    if (!result.ok || result.data === undefined) {
+      setError(resultMessage(result));
+      return;
+    }
+    setRevealed({ entryId: entry.id, key, value: result.data });
     if (revealTimer.current) {
       window.clearTimeout(revealTimer.current);
     }
@@ -623,6 +1095,7 @@ export function App() {
                 type="button"
                 onClick={() => setGroupModal(true)}
                 title="Новая группа"
+                disabled={active.readOnly}
               >
                 +
               </button>
@@ -631,7 +1104,10 @@ export function App() {
               <button
                 className={`group-row ${selectedGroupId === null ? 'group-row--active' : ''}`}
                 type="button"
-                onClick={() => setSelectedGroupId(null)}
+                onClick={() => {
+                  setSelectedGroupId(null);
+                  setSelectedEntryId(null);
+                }}
               >
                 <span>▦</span>
                 <strong>Все записи</strong>
@@ -640,13 +1116,26 @@ export function App() {
               {active.groups.map((group) => (
                 <button
                   key={group.id}
-                  className={`group-row ${selectedGroupId === group.id ? 'group-row--active' : ''}`}
+                  className={`group-row ${
+                    selectedGroupId === group.id ? 'group-row--active' : ''
+                  } ${dropTargetGroupId === group.id ? 'group-row--drop-target' : ''}`}
                   style={{ paddingLeft: 14 + group.depth * 18 }}
                   type="button"
+          draggable={group.parentId !== null && !active.readOnly}
+          onDragStart={(event) => beginGroupDrag(event, group.id)}
+          onDragEnd={endEntryDrag}
                   onClick={() => {
                     setSelectedGroupId(group.id);
                     setSelectedEntryId(null);
                   }}
+                  onDragEnter={(event) => allowTreeDrop(event, group.id)}
+                  onDragOver={(event) => allowTreeDrop(event, group.id)}
+                  onDragLeave={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                      setDropTargetGroupId((current) => (current === group.id ? null : current));
+                    }
+                  }}
+                  onDrop={(event) => void dropOnGroup(event, group.id)}
                 >
                   <span>{group.depth === 0 ? '◇' : '›'}</span>
                   <strong>{group.name}</strong>
@@ -721,8 +1210,13 @@ export function App() {
                 filteredEntries.map((entry) => (
                   <button
                     key={entry.id}
-                    className={`entry-row ${selectedEntryId === entry.id ? 'entry-row--active' : ''}`}
+                    className={`entry-row ${selectedEntryId === entry.id ? 'entry-row--active' : ''} ${
+                      draggingEntryId === entry.id ? 'entry-row--dragging' : ''
+                    }`}
                     type="button"
+                    draggable={!active.readOnly}
+                    onDragStart={(event) => beginEntryDrag(event, entry)}
+                    onDragEnd={endEntryDrag}
                     onClick={() => {
                       setSelectedEntryId(entry.id);
                       setRevealed(null);
@@ -784,7 +1278,9 @@ export function App() {
                     <label>Пароль</label>
                     <div className="secret-value">
                       <code>
-                        {revealed?.entryId === selectedEntry.id ? revealed.value : '••••••••••••'}
+                        {revealed?.entryId === selectedEntry.id && revealed.key === 'Password'
+                          ? revealed.value
+                          : '••••••••••••'}
                       </code>
                       <button
                         type="button"
@@ -815,6 +1311,111 @@ export function App() {
                       : {})}
                   />
                 </div>
+
+                {selectedEntry.customFields.length > 0 ? (
+                  <section className="custom-fields-details">
+                    <div className="section-heading">
+                      <label>Пользовательские поля</label>
+                      <span>{selectedEntry.customFields.length}</span>
+                    </div>
+                    <div className="field-stack field-stack--custom">
+                      {selectedEntry.customFields.map((field) =>
+                        field.protected ? (
+                          <div className="detail-field" key={field.key}>
+                            <label>
+                              {field.key} <span className="protected-badge">Защищено</span>
+                            </label>
+                            <div className="secret-value">
+                              <code>
+                                {revealed?.entryId === selectedEntry.id &&
+                                revealed.key === field.key
+                                  ? revealed.value || '—'
+                                  : field.hasValue
+                                    ? '••••••••••••'
+                                    : '—'}
+                              </code>
+                              <button
+                                type="button"
+                                onClick={() => void revealCustomField(selectedEntry, field.key)}
+                                title="Показать на 10 секунд"
+                              >
+                                ◉
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void copyCustomField(selectedEntry, field.key)}
+                                title="Копировать значение"
+                              >
+                                ▣
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <DetailField
+                            key={field.key}
+                            label={field.key}
+                            value={field.value || '—'}
+                            onCopy={() => void copyCustomField(selectedEntry, field.key)}
+                          />
+                        ),
+                      )}
+                    </div>
+                  </section>
+                ) : null}
+
+                <section className="attachments-details">
+                  <div className="section-heading section-heading--actions">
+                    <div>
+                      <label>Вложения</label>
+                      <span>{selectedEntry.attachments.length}</span>
+                    </div>
+                    <button
+                      className="button button--ghost button--small"
+                      type="button"
+                      onClick={() => void addAttachments(selectedEntry)}
+                      disabled={active.readOnly}
+                    >
+                      + Добавить
+                    </button>
+                  </div>
+                  {selectedEntry.attachments.length === 0 ? (
+                    <p className="attachments-empty">Вложений нет.</p>
+                  ) : (
+                    <div className="attachments-list">
+                      {selectedEntry.attachments.map((attachment) => (
+                        <div className="attachment-row" key={attachment.name}>
+                          <div className="attachment-row__icon">▧</div>
+                          <div className="attachment-row__main">
+                            <strong title={attachment.name}>{attachment.name}</strong>
+                            <span>{formatFileSize(attachment.size)}</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void exportAttachment(selectedEntry, attachment.name)}
+                            title="Сохранить вложение"
+                          >
+                            ↓
+                          </button>
+                          <button
+                            className="attachment-row__delete"
+                            type="button"
+                            onClick={() =>
+                              setConfirmAttachmentDelete({
+                                entry: selectedEntry,
+                                name: attachment.name,
+                              })
+                            }
+                            title="Удалить вложение"
+                            disabled={active.readOnly}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <small className="attachments-limit">До 25 МБ на файл и 100 МБ на запись.</small>
+                </section>
 
                 {selectedEntry.tags.length > 0 ? (
                   <div className="tag-list">
@@ -948,7 +1549,7 @@ export function App() {
       {editor && active ? (
         <Modal
           title={editor.entry ? 'Редактирование записи' : 'Новая запись'}
-          width={680}
+          width={820}
           onClose={() => setEditor(null)}
         >
           <form className="form form--grid" onSubmit={(event) => void submitEntry(event)}>
@@ -968,12 +1569,31 @@ export function App() {
               />
             </label>
             <label>
-              <span>{editor.entry ? 'Новый пароль (необязательно)' : 'Пароль'}</span>
-              <input
-                type="password"
-                value={editor.password}
-                onChange={(event) => setEditor({ ...editor, password: event.target.value })}
-              />
+              <span>Пароль</span>
+              <div className="password-editor">
+                <input
+                  type={editor.passwordVisible ? 'text' : 'password'}
+                  value={editor.password}
+                  placeholder={editor.entry && !editor.passwordLoaded ? '••••••••••••' : ''}
+                  onChange={(event) =>
+                    setEditor({
+                      ...editor,
+                      password: event.target.value,
+                      passwordLoaded: true,
+                    })
+                  }
+                  autoComplete={editor.entry ? 'current-password' : 'new-password'}
+                />
+                <button
+                  className="password-editor__toggle"
+                  type="button"
+                  onClick={() => void toggleEditorPassword()}
+                  title={editor.passwordVisible ? 'Скрыть пароль' : 'Показать пароль'}
+                  aria-label={editor.passwordVisible ? 'Скрыть пароль' : 'Показать пароль'}
+                >
+                  ◉
+                </button>
+              </div>
             </label>
             <label className="span-2">
               <span>URL</span>
@@ -1011,6 +1631,78 @@ export function App() {
                 onChange={(event) => setEditor({ ...editor, notes: event.target.value })}
               />
             </label>
+            <section className="custom-fields-editor span-2">
+              <div className="custom-fields-editor__header">
+                <div>
+                  <span>Пользовательские поля</span>
+                  <small>Дополнительные поля записи KDBX</small>
+                </div>
+                <button className="button button--secondary" type="button" onClick={addCustomField}>
+                  + Добавить поле
+                </button>
+              </div>
+              {editor.customFields.length === 0 ? (
+                <p className="custom-fields-editor__empty">Дополнительных полей пока нет.</p>
+              ) : (
+                <div className="custom-fields-editor__list">
+                  {editor.customFields.map((field) => (
+                    <div className="custom-field-row" key={field.id}>
+                      <label>
+                        <span>Название</span>
+                        <input
+                          value={field.key}
+                          onChange={(event) =>
+                            updateCustomField(field.id, { key: event.target.value })
+                          }
+                          placeholder="Например, API token"
+                        />
+                      </label>
+                      <label>
+                        <span>Значение</span>
+                        <input
+                          type={field.protected ? 'password' : 'text'}
+                          value={field.value}
+                          onChange={(event) =>
+                            updateCustomField(field.id, {
+                              value: event.target.value,
+                              preserveValue: false,
+                            })
+                          }
+                          placeholder={
+                            field.preserveValue && field.hasStoredValue
+                              ? 'Сохранено — оставьте пустым, чтобы не менять'
+                              : 'Введите значение'
+                          }
+                        />
+                        {field.preserveValue && field.hasStoredValue ? (
+                          <small className="form__hint">
+                            Скрытое значение останется без изменений.
+                          </small>
+                        ) : null}
+                      </label>
+                      <label className="check custom-field-row__protected">
+                        <input
+                          type="checkbox"
+                          checked={field.protected}
+                          onChange={(event) =>
+                            updateCustomField(field.id, { protected: event.target.checked })
+                          }
+                        />
+                        <span>Защищённое</span>
+                      </label>
+                      <button
+                        className="icon-button custom-field-row__remove"
+                        type="button"
+                        onClick={() => removeCustomField(field.id)}
+                        title="Удалить поле"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
             <label className="check">
               <input
                 type="checkbox"
@@ -1035,32 +1727,6 @@ export function App() {
                   value={editor.expiryTime}
                   onChange={(event) => setEditor({ ...editor, expiryTime: event.target.value })}
                 />
-              </label>
-            ) : null}
-            <label className="check span-2">
-              <input
-                type="checkbox"
-                checked={editor.autoTypeEnabled}
-                onChange={(event) =>
-                  setEditor({ ...editor, autoTypeEnabled: event.target.checked })
-                }
-              />
-              <span>Разрешить Auto-Type для этой записи</span>
-            </label>
-            {editor.autoTypeEnabled ? (
-              <label className="span-2">
-                <span>Последовательность Auto-Type</span>
-                <input
-                  value={editor.autoTypeSequence}
-                  onChange={(event) =>
-                    setEditor({ ...editor, autoTypeSequence: event.target.value })
-                  }
-                  placeholder={DEFAULT_AUTO_TYPE_SEQUENCE}
-                />
-                <small className="form__hint">
-                  Доступны: {'{USERNAME}'}, {'{PASSWORD}'}, {'{URL}'}, {'{TAB}'}, {'{ENTER}'},
-                  {' {DELAY=500}'}.
-                </small>
               </label>
             ) : null}
             <div className="form__actions span-2">
@@ -1194,6 +1860,30 @@ export function App() {
               className="button button--danger"
               type="button"
               onClick={() => void deleteEntry()}
+            >
+              Удалить
+            </button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {confirmAttachmentDelete ? (
+        <Modal title="Удалить вложение?" onClose={() => setConfirmAttachmentDelete(null)}>
+          <p className="confirm-text">
+            Вложение «{confirmAttachmentDelete.name}» будет удалено из записи.
+          </p>
+          <div className="form__actions">
+            <button
+              className="button button--ghost"
+              type="button"
+              onClick={() => setConfirmAttachmentDelete(null)}
+            >
+              Отмена
+            </button>
+            <button
+              className="button button--danger"
+              type="button"
+              onClick={() => void deleteAttachment()}
             >
               Удалить
             </button>

@@ -13,15 +13,18 @@ import {
   unlink,
   writeFile,
 } from 'node:fs/promises';
-import { Consts, Kdbx, KdbxCredentials, ProtectedValue } from 'kdbxweb';
-import type { KdbxEntry, KdbxGroup } from 'kdbxweb';
+import { Consts, Kdbx, KdbxBinaries, KdbxCredentials, ProtectedValue } from 'kdbxweb';
+import type { KdbxBinary, KdbxBinaryWithHash, KdbxEntry, KdbxGroup } from 'kdbxweb';
 import { DEFAULT_AUTO_TYPE_SEQUENCE } from '@passdeck/shared';
 import type {
   CreateDatabaseRequest,
   CreateGroupRequest,
+  CustomFieldInput,
   DatabaseView,
   EntrySummary,
   GroupSummary,
+  MoveEntryRequest,
+  MoveGroupRequest,
   OpenDatabaseRequest,
   SaveEntryRequest,
 } from '@passdeck/shared';
@@ -55,9 +58,14 @@ export interface AutoTypePayload {
 }
 
 const STANDARD_FIELDS = new Set(['Title', 'UserName', 'Password', 'URL', 'Notes']);
+const RESERVED_FIELD_NAMES = new Set(
+  [...STANDARD_FIELDS].map((fieldName) => fieldName.toLowerCase()),
+);
 const FAVORITE_KEY = 'PassDeck.Favorite';
 const AUTO_TYPE_ENABLED_KEY = 'PassDeck.AutoTypeEnabled';
 const AUTO_TYPE_SEQUENCE_KEY = 'PassDeck.AutoTypeSequence';
+const MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024;
+const MAX_ENTRY_ATTACHMENTS_BYTES = 100 * 1024 * 1024;
 
 function bufferToArrayBuffer(buffer: Buffer): ArrayBuffer {
   return buffer.buffer.slice(
@@ -72,6 +80,17 @@ function fieldText(entry: KdbxEntry, key: string): string {
     return value.getText();
   }
   return typeof value === 'string' ? value : '';
+}
+
+function binaryArrayBuffer(binary: KdbxBinary | KdbxBinaryWithHash): ArrayBuffer {
+  const value = KdbxBinaries.isKdbxBinaryWithHash(binary) ? binary.value : binary;
+  return value instanceof ProtectedValue
+    ? bufferToArrayBuffer(Buffer.from(value.getBinary()))
+    : value;
+}
+
+function attachmentSize(binary: KdbxBinary | KdbxBinaryWithHash): number {
+  return binaryArrayBuffer(binary).byteLength;
 }
 
 export class DatabaseService {
@@ -179,7 +198,7 @@ export class DatabaseService {
     db.setVersion(4);
     db.header.versionMinor = 1;
     db.setKdf(Consts.KdfId.Argon2id);
-    db.meta.generator = 'PassDeck 0.1.1';
+    db.meta.generator = 'PassDeck 0.2.0';
     db.meta.historyMaxItems = 10;
     db.createRecycleBin();
 
@@ -268,18 +287,26 @@ export class DatabaseService {
     const session = this.getWritableSession(request.sessionId);
     const db = session.db;
     const group = this.findGroup(db, request.groupId);
-    if (!group) {
+    if (!group || this.isRecycleBin(db, group)) {
       throw new PassDeckError('GROUP_NOT_FOUND', 'Группа не найдена.');
     }
 
-    let entry: KdbxEntry;
+    let existingEntry: KdbxEntry | undefined;
     if (request.entryId) {
-      const existing = this.findEntry(db, request.entryId);
-      if (!existing) {
+      existingEntry = this.findEntry(db, request.entryId);
+      if (!existingEntry) {
         throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
       }
-      existing.pushHistory();
-      entry = existing;
+    }
+    const preparedCustomFields =
+      request.customFields === undefined
+        ? undefined
+        : this.prepareCustomFields(existingEntry, request.customFields);
+
+    let entry: KdbxEntry;
+    if (existingEntry) {
+      existingEntry.pushHistory();
+      entry = existingEntry;
       if (entry.parentGroup?.uuid.toString() !== group.uuid.toString()) {
         db.move(entry, group);
       }
@@ -312,19 +339,15 @@ export class DatabaseService {
       lastModified: new Date(),
     });
 
-    if (request.customFields !== undefined) {
+    if (preparedCustomFields !== undefined) {
       for (const key of [...entry.fields.keys()]) {
         if (!STANDARD_FIELDS.has(key)) {
           entry.fields.delete(key);
         }
       }
-      for (const field of request.customFields) {
-        const key = field.key.trim();
-        if (!key || STANDARD_FIELDS.has(key)) {
-          continue;
-        }
+      for (const field of preparedCustomFields) {
         entry.fields.set(
-          key,
+          field.key,
           field.protected ? ProtectedValue.fromString(field.value) : field.value,
         );
       }
@@ -341,7 +364,68 @@ export class DatabaseService {
     if (!entry) {
       throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
     }
-    session.db.remove(entry);
+    session.db.move(entry, undefined);
+    session.dirty = true;
+    return this.toView(session);
+  }
+
+  moveEntry(request: MoveEntryRequest): DatabaseView {
+    const session = this.getWritableSession(request.sessionId);
+    const entry = this.findEntry(session.db, request.entryId);
+    if (!entry) {
+      throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
+    }
+    const target = this.findGroup(session.db, request.targetGroupId);
+    if (!target || this.isRecycleBin(session.db, target)) {
+      throw new PassDeckError('GROUP_NOT_FOUND', 'Группа назначения не найдена.');
+    }
+    if (entry.parentGroup?.uuid.toString() === target.uuid.toString()) {
+      return this.toView(session);
+    }
+    session.db.move(entry, target);
+    session.dirty = true;
+    return this.toView(session);
+  }
+
+  moveGroup(request: MoveGroupRequest): DatabaseView {
+    const session = this.getWritableSession(request.sessionId);
+    const group = this.findGroup(session.db, request.groupId);
+
+    if (!group || this.isRecycleBin(session.db, group)) {
+      throw new PassDeckError('GROUP_NOT_FOUND', 'Перемещаемая группа не найдена.');
+    }
+
+    const root = session.db.getDefaultGroup();
+    if (group.uuid.toString() === root.uuid.toString()) {
+      throw new PassDeckError('GROUP_MOVE_ROOT', 'Корневую группу перемещать нельзя.');
+    }
+
+    const target = this.findGroup(session.db, request.targetGroupId);
+    if (!target || this.isRecycleBin(session.db, target)) {
+      throw new PassDeckError('GROUP_NOT_FOUND', 'Группа назначения не найдена.');
+    }
+
+    if (group.uuid.toString() === target.uuid.toString()) {
+      throw new PassDeckError('GROUP_MOVE_SELF', 'Нельзя переместить группу в саму себя.');
+    }
+
+    if (group.parentGroup?.uuid.toString() === target.uuid.toString()) {
+      return this.toView(session);
+    }
+
+    let current: KdbxGroup | undefined = target;
+    while (current) {
+      if (current.uuid.toString() === group.uuid.toString()) {
+        throw new PassDeckError(
+          'GROUP_MOVE_CYCLE',
+          'Нельзя переместить группу в собственную вложенную группу.',
+        );
+      }
+      current = current.parentGroup;
+    }
+
+    session.db.move(group, target);
+    group.times.update();
     session.dirty = true;
     return this.toView(session);
   }
@@ -351,7 +435,7 @@ export class DatabaseService {
     const parent = request.parentId
       ? this.findGroup(session.db, request.parentId)
       : session.db.getDefaultGroup();
-    if (!parent) {
+    if (!parent || this.isRecycleBin(session.db, parent)) {
       throw new PassDeckError('GROUP_NOT_FOUND', 'Родительская группа не найдена.');
     }
     session.db.createGroup(parent, request.name.trim() || 'Новая группа');
@@ -403,21 +487,143 @@ export class DatabaseService {
     return fieldText(entry, 'Password');
   }
 
+  revealCustomField(sessionId: string, entryId: string, key: string): string {
+    const session = this.getUnlockedSession(sessionId);
+    const entry = this.findEntry(session.db, entryId);
+    if (!entry) {
+      throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
+    }
+    const fieldKey = key.trim();
+    if (!fieldKey || RESERVED_FIELD_NAMES.has(fieldKey.toLowerCase())) {
+      throw new PassDeckError('CUSTOM_FIELD_NOT_FOUND', 'Пользовательское поле не найдено.');
+    }
+    const value = entry.fields.get(fieldKey);
+    if (value === undefined) {
+      throw new PassDeckError('CUSTOM_FIELD_NOT_FOUND', 'Пользовательское поле не найдено.');
+    }
+    return value instanceof ProtectedValue ? value.getText() : value;
+  }
+
+  async addAttachments(
+    sessionId: string,
+    entryId: string,
+    filePaths: string[],
+  ): Promise<DatabaseView> {
+    const session = this.getWritableSession(sessionId);
+    const entry = this.findEntry(session.db, entryId);
+    if (!entry) {
+      throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
+    }
+    if (filePaths.length === 0) {
+      return this.toView(session);
+    }
+
+    const existingNames = new Set(
+      [...entry.binaries.keys()].map((name) => name.toLocaleLowerCase()),
+    );
+    const selectedNames = new Set<string>();
+    const prepared: Array<{ sourcePath: string; name: string; size: number }> = [];
+
+    for (const sourcePath of filePaths) {
+      const info = await stat(sourcePath);
+      if (!info.isFile()) {
+        throw new PassDeckError('ATTACHMENT_NOT_FILE', 'Для вложения необходимо выбрать файл.');
+      }
+      const name = path.basename(sourcePath).trim();
+      const normalizedName = name.toLocaleLowerCase();
+      if (!name) {
+        throw new PassDeckError('ATTACHMENT_EMPTY_NAME', 'Имя вложения не может быть пустым.');
+      }
+      if (existingNames.has(normalizedName) || selectedNames.has(normalizedName)) {
+        throw new PassDeckError(
+          'ATTACHMENT_EXISTS',
+          `Вложение «${name}» уже существует в записи. Переименуйте файл или удалите старое вложение.`,
+        );
+      }
+      if (info.size > MAX_ATTACHMENT_SIZE_BYTES) {
+        throw new PassDeckError('ATTACHMENT_TOO_LARGE', `Файл «${name}» превышает лимит 25 МБ.`);
+      }
+      selectedNames.add(normalizedName);
+      prepared.push({ sourcePath, name, size: info.size });
+    }
+
+    const currentSize = [...entry.binaries.values()].reduce(
+      (total, binary) => total + attachmentSize(binary),
+      0,
+    );
+    const addedSize = prepared.reduce((total, item) => total + item.size, 0);
+    if (currentSize + addedSize > MAX_ENTRY_ATTACHMENTS_BYTES) {
+      throw new PassDeckError(
+        'ATTACHMENTS_TOTAL_TOO_LARGE',
+        'Суммарный размер вложений одной записи не может превышать 100 МБ.',
+      );
+    }
+
+    const binaries: Array<{ name: string; binary: KdbxBinaryWithHash }> = [];
+    for (const item of prepared) {
+      const file = await readFile(item.sourcePath);
+      const binary = await session.db.binaries.add(
+        new Uint8Array(file.buffer, file.byteOffset, file.byteLength),
+      );
+      binaries.push({ name: item.name, binary });
+    }
+
+    entry.pushHistory();
+    for (const item of binaries) {
+      entry.binaries.set(item.name, item.binary);
+    }
+    entry.times.update();
+    session.dirty = true;
+    return this.toView(session);
+  }
+
+  async exportAttachment(
+    sessionId: string,
+    entryId: string,
+    name: string,
+    destinationPath: string,
+  ): Promise<void> {
+    const session = this.getUnlockedSession(sessionId);
+    const entry = this.findEntry(session.db, entryId);
+    if (!entry) {
+      throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
+    }
+    const binary = entry.binaries.get(name);
+    if (!binary) {
+      throw new PassDeckError('ATTACHMENT_NOT_FOUND', 'Вложение не найдено.');
+    }
+    const data = binaryArrayBuffer(binary);
+    await writeFile(destinationPath, new Uint8Array(data));
+  }
+
+  deleteAttachment(sessionId: string, entryId: string, name: string): DatabaseView {
+    const session = this.getWritableSession(sessionId);
+    const entry = this.findEntry(session.db, entryId);
+    if (!entry) {
+      throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
+    }
+    if (!entry.binaries.has(name)) {
+      throw new PassDeckError('ATTACHMENT_NOT_FOUND', 'Вложение не найдено.');
+    }
+    entry.pushHistory();
+    entry.binaries.delete(name);
+    entry.times.update();
+    session.dirty = true;
+    return this.toView(session);
+  }
+
   getAutoTypePayload(sessionId: string, entryId: string): AutoTypePayload {
     const session = this.getUnlockedSession(sessionId);
     const entry = this.findEntry(session.db, entryId);
     if (!entry) {
       throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
     }
-    if (entry.customData?.get(AUTO_TYPE_ENABLED_KEY)?.value === 'false') {
-      throw new PassDeckError('AUTO_TYPE_DISABLED', 'Auto-Type отключён для этой записи.');
-    }
     return {
       title: fieldText(entry, 'Title') || 'Без названия',
       username: fieldText(entry, 'UserName'),
       password: fieldText(entry, 'Password'),
       url: fieldText(entry, 'URL'),
-      sequence: entry.customData?.get(AUTO_TYPE_SEQUENCE_KEY)?.value || DEFAULT_AUTO_TYPE_SEQUENCE,
+      sequence: DEFAULT_AUTO_TYPE_SEQUENCE,
     };
   }
 
@@ -448,6 +654,51 @@ export class DatabaseService {
     await this.settings.setLastOpenDatabases([]);
   }
 
+  private prepareCustomFields(
+    entry: KdbxEntry | undefined,
+    fields: CustomFieldInput[],
+  ): Array<{ key: string; value: string; protected: boolean }> {
+    const seenKeys = new Set<string>();
+    return fields.map((field) => {
+      const key = field.key.trim();
+      const normalizedKey = key.toLowerCase();
+      if (!key) {
+        throw new PassDeckError(
+          'CUSTOM_FIELD_EMPTY_NAME',
+          'Название пользовательского поля не может быть пустым.',
+        );
+      }
+      if (RESERVED_FIELD_NAMES.has(normalizedKey)) {
+        throw new PassDeckError(
+          'CUSTOM_FIELD_RESERVED_NAME',
+          `Имя «${key}» зарезервировано стандартным полем KDBX.`,
+        );
+      }
+      if (seenKeys.has(normalizedKey)) {
+        throw new PassDeckError(
+          'CUSTOM_FIELD_DUPLICATE_NAME',
+          `Пользовательское поле «${key}» указано несколько раз.`,
+        );
+      }
+      seenKeys.add(normalizedKey);
+
+      let value = field.value ?? '';
+      if (field.preserveValue === true) {
+        const originalKey = (field.originalKey ?? key).trim();
+        const existingValue = entry?.fields.get(originalKey);
+        if (existingValue === undefined || STANDARD_FIELDS.has(originalKey)) {
+          throw new PassDeckError(
+            'CUSTOM_FIELD_SOURCE_NOT_FOUND',
+            `Не удалось сохранить скрытое значение поля «${originalKey}».`,
+          );
+        }
+        value = existingValue instanceof ProtectedValue ? existingValue.getText() : existingValue;
+      }
+
+      return { key, value, protected: field.protected };
+    });
+  }
+
   private async loadKdbx(filePath: string, password: string): Promise<Kdbx> {
     const raw = await readFile(filePath);
     const credentials = new KdbxCredentials(ProtectedValue.fromString(password));
@@ -473,9 +724,13 @@ export class DatabaseService {
     const groups: GroupSummary[] = [];
     const entries: EntrySummary[] = [];
     const root = session.db.getDefaultGroup();
+    const recycleBinId = session.db.meta.recycleBinUuid?.toString();
 
     const visit = (group: KdbxGroup, parentId: string | null, depth: number): void => {
       const groupId = group.uuid.toString();
+      if (parentId !== null && groupId === recycleBinId) {
+        return;
+      }
       groups.push({
         id: groupId,
         name: group.name || 'Без названия',
@@ -487,11 +742,16 @@ export class DatabaseService {
       for (const entry of group.entries) {
         const customFields = [...entry.fields.entries()]
           .filter(([key]) => !STANDARD_FIELDS.has(key))
-          .map(([key, value]) => ({
-            key,
-            value: value instanceof ProtectedValue ? '••••••' : value,
-            protected: value instanceof ProtectedValue,
-          }));
+          .map(([key, value]) => {
+            const isProtected = value instanceof ProtectedValue;
+            const plainValue = isProtected ? value.getText() : value;
+            return {
+              key,
+              value: isProtected ? '' : plainValue,
+              protected: isProtected,
+              hasValue: plainValue.length > 0,
+            };
+          });
         entries.push({
           id: entry.uuid.toString(),
           groupId,
@@ -505,6 +765,9 @@ export class DatabaseService {
           ...(entry.times.expiryTime ? { expiryTime: entry.times.expiryTime.toISOString() } : {}),
           ...(entry.times.lastModTime ? { modifiedAt: entry.times.lastModTime.toISOString() } : {}),
           customFields,
+          attachments: [...entry.binaries.entries()]
+            .map(([name, binary]) => ({ name, size: attachmentSize(binary) }))
+            .sort((left, right) => left.name.localeCompare(right.name)),
           autoTypeEnabled: entry.customData?.get(AUTO_TYPE_ENABLED_KEY)?.value !== 'false',
           autoTypeSequence:
             entry.customData?.get(AUTO_TYPE_SEQUENCE_KEY)?.value || DEFAULT_AUTO_TYPE_SEQUENCE,
@@ -554,12 +817,19 @@ export class DatabaseService {
     return session;
   }
 
+  private isRecycleBin(db: Kdbx, group: KdbxGroup): boolean {
+    return db.meta.recycleBinUuid?.toString() === group.uuid.toString();
+  }
+
   private findGroup(db: Kdbx, groupId: string): KdbxGroup | undefined {
     return db.getGroup(groupId);
   }
 
   private findEntry(db: Kdbx, entryId: string): KdbxEntry | undefined {
     for (const group of db.getDefaultGroup().allGroups()) {
+      if (this.isRecycleBin(db, group)) {
+        continue;
+      }
       const found = group.entries.find((entry) => entry.uuid.toString() === entryId);
       if (found) {
         return found;

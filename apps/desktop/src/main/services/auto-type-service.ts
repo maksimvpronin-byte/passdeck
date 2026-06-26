@@ -2,12 +2,15 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { globalShortcut, type BrowserWindow } from 'electron';
 import {
-  escapeSendKeysLiteral,
   parseAutoTypeSequence,
   type AutoTypeAction,
 } from './auto-type-sequence';
 import type { DatabaseService } from './database-service';
 import { PassDeckError } from './errors';
+import {
+  AUTO_TYPE_TARGET_CHANGED_MARKER,
+  buildAutoTypeWindowsScript,
+} from './auto-type-windows';
 
 const execFileAsync = promisify(execFile);
 
@@ -42,15 +45,6 @@ async function runPowerShell(script: string): Promise<string> {
     },
   );
   return stdout.trim();
-}
-
-function textActionScript(value: string): string {
-  const escaped = escapeSendKeysLiteral(value);
-  const encoded = Buffer.from(escaped, 'utf8').toString('base64');
-  return [
-    `$text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))`,
-    '[System.Windows.Forms.SendKeys]::SendWait($text)',
-  ].join('\n');
 }
 
 async function readForegroundWindow(): Promise<ForegroundWindowInfo> {
@@ -97,35 +91,16 @@ async function sendActionsToWindow(
   target: ForegroundWindowInfo,
   actions: AutoTypeAction[],
 ): Promise<void> {
-  const actionScript = actions
-    .map((action) => {
-      if (action.kind === 'text') {
-        return textActionScript(action.value);
-      }
-      if (action.kind === 'delay') {
-        return `Start-Sleep -Milliseconds ${action.milliseconds}`;
-      }
-      return `[System.Windows.Forms.SendKeys]::SendWait('{${action.value}}')`;
-    })
-    .join('\nStart-Sleep -Milliseconds 40\n');
+  const result = await runPowerShell(
+    buildAutoTypeWindowsScript(target.handle, actions),
+  );
 
-  const script = String.raw`
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public static class PassDeckNative {
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int command);
-}
-'@
-$target = [IntPtr]::new(${target.handle})
-[PassDeckNative]::ShowWindow($target, 9) | Out-Null
-[PassDeckNative]::SetForegroundWindow($target) | Out-Null
-Start-Sleep -Milliseconds 120
-${actionScript}
-`;
-  await runPowerShell(script);
+  if (result.includes(AUTO_TYPE_TARGET_CHANGED_MARKER)) {
+    throw new PassDeckError(
+      'AUTO_TYPE_TARGET_CHANGED',
+      'Целевое окно изменилось до начала Auto-Type. Повторите сочетание в нужном окне.',
+    );
+  }
 }
 
 export class AutoTypeService {

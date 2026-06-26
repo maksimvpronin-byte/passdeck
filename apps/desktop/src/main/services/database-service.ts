@@ -13,8 +13,8 @@ import {
   unlink,
   writeFile,
 } from 'node:fs/promises';
-import { Consts, Kdbx, KdbxCredentials, ProtectedValue } from 'kdbxweb';
-import type { KdbxEntry, KdbxGroup } from 'kdbxweb';
+import { Consts, Kdbx, KdbxBinaries, KdbxCredentials, ProtectedValue } from 'kdbxweb';
+import type { KdbxBinary, KdbxBinaryWithHash, KdbxEntry, KdbxGroup } from 'kdbxweb';
 import { DEFAULT_AUTO_TYPE_SEQUENCE } from '@passdeck/shared';
 import type {
   CreateDatabaseRequest,
@@ -62,6 +62,8 @@ const RESERVED_FIELD_NAMES = new Set(
 const FAVORITE_KEY = 'PassDeck.Favorite';
 const AUTO_TYPE_ENABLED_KEY = 'PassDeck.AutoTypeEnabled';
 const AUTO_TYPE_SEQUENCE_KEY = 'PassDeck.AutoTypeSequence';
+const MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024;
+const MAX_ENTRY_ATTACHMENTS_BYTES = 100 * 1024 * 1024;
 
 function bufferToArrayBuffer(buffer: Buffer): ArrayBuffer {
   return buffer.buffer.slice(
@@ -76,6 +78,17 @@ function fieldText(entry: KdbxEntry, key: string): string {
     return value.getText();
   }
   return typeof value === 'string' ? value : '';
+}
+
+function binaryArrayBuffer(binary: KdbxBinary | KdbxBinaryWithHash): ArrayBuffer {
+  const value = KdbxBinaries.isKdbxBinaryWithHash(binary) ? binary.value : binary;
+  return value instanceof ProtectedValue
+    ? bufferToArrayBuffer(Buffer.from(value.getBinary()))
+    : value;
+}
+
+function attachmentSize(binary: KdbxBinary | KdbxBinaryWithHash): number {
+  return binaryArrayBuffer(binary).byteLength;
 }
 
 export class DatabaseService {
@@ -428,6 +441,114 @@ export class DatabaseService {
     return value instanceof ProtectedValue ? value.getText() : value;
   }
 
+  async addAttachments(
+    sessionId: string,
+    entryId: string,
+    filePaths: string[],
+  ): Promise<DatabaseView> {
+    const session = this.getWritableSession(sessionId);
+    const entry = this.findEntry(session.db, entryId);
+    if (!entry) {
+      throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
+    }
+    if (filePaths.length === 0) {
+      return this.toView(session);
+    }
+
+    const existingNames = new Set(
+      [...entry.binaries.keys()].map((name) => name.toLocaleLowerCase()),
+    );
+    const selectedNames = new Set<string>();
+    const prepared: Array<{ sourcePath: string; name: string; size: number }> = [];
+
+    for (const sourcePath of filePaths) {
+      const info = await stat(sourcePath);
+      if (!info.isFile()) {
+        throw new PassDeckError('ATTACHMENT_NOT_FILE', 'Для вложения необходимо выбрать файл.');
+      }
+      const name = path.basename(sourcePath).trim();
+      const normalizedName = name.toLocaleLowerCase();
+      if (!name) {
+        throw new PassDeckError('ATTACHMENT_EMPTY_NAME', 'Имя вложения не может быть пустым.');
+      }
+      if (existingNames.has(normalizedName) || selectedNames.has(normalizedName)) {
+        throw new PassDeckError(
+          'ATTACHMENT_EXISTS',
+          `Вложение «${name}» уже существует в записи. Переименуйте файл или удалите старое вложение.`,
+        );
+      }
+      if (info.size > MAX_ATTACHMENT_SIZE_BYTES) {
+        throw new PassDeckError('ATTACHMENT_TOO_LARGE', `Файл «${name}» превышает лимит 25 МБ.`);
+      }
+      selectedNames.add(normalizedName);
+      prepared.push({ sourcePath, name, size: info.size });
+    }
+
+    const currentSize = [...entry.binaries.values()].reduce(
+      (total, binary) => total + attachmentSize(binary),
+      0,
+    );
+    const addedSize = prepared.reduce((total, item) => total + item.size, 0);
+    if (currentSize + addedSize > MAX_ENTRY_ATTACHMENTS_BYTES) {
+      throw new PassDeckError(
+        'ATTACHMENTS_TOTAL_TOO_LARGE',
+        'Суммарный размер вложений одной записи не может превышать 100 МБ.',
+      );
+    }
+
+    const binaries: Array<{ name: string; binary: KdbxBinaryWithHash }> = [];
+    for (const item of prepared) {
+      const file = await readFile(item.sourcePath);
+      const binary = await session.db.binaries.add(
+        new Uint8Array(file.buffer, file.byteOffset, file.byteLength),
+      );
+      binaries.push({ name: item.name, binary });
+    }
+
+    entry.pushHistory();
+    for (const item of binaries) {
+      entry.binaries.set(item.name, item.binary);
+    }
+    entry.times.update();
+    session.dirty = true;
+    return this.toView(session);
+  }
+
+  async exportAttachment(
+    sessionId: string,
+    entryId: string,
+    name: string,
+    destinationPath: string,
+  ): Promise<void> {
+    const session = this.getUnlockedSession(sessionId);
+    const entry = this.findEntry(session.db, entryId);
+    if (!entry) {
+      throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
+    }
+    const binary = entry.binaries.get(name);
+    if (!binary) {
+      throw new PassDeckError('ATTACHMENT_NOT_FOUND', 'Вложение не найдено.');
+    }
+    const data = binaryArrayBuffer(binary);
+    await writeFile(destinationPath, new Uint8Array(data));
+  }
+
+  deleteAttachment(sessionId: string, entryId: string, name: string): DatabaseView {
+    const session = this.getWritableSession(sessionId);
+    const entry = this.findEntry(session.db, entryId);
+    if (!entry) {
+      throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
+    }
+    if (!entry.binaries.has(name)) {
+      throw new PassDeckError('ATTACHMENT_NOT_FOUND', 'Вложение не найдено.');
+    }
+    entry.pushHistory();
+    entry.binaries.delete(name);
+    entry.times.update();
+    session.dirty = true;
+    return this.toView(session);
+  }
+
   getAutoTypePayload(sessionId: string, entryId: string): AutoTypePayload {
     const session = this.getUnlockedSession(sessionId);
     const entry = this.findEntry(session.db, entryId);
@@ -577,6 +698,9 @@ export class DatabaseService {
           ...(entry.times.expiryTime ? { expiryTime: entry.times.expiryTime.toISOString() } : {}),
           ...(entry.times.lastModTime ? { modifiedAt: entry.times.lastModTime.toISOString() } : {}),
           customFields,
+          attachments: [...entry.binaries.entries()]
+            .map(([name, binary]) => ({ name, size: attachmentSize(binary) }))
+            .sort((left, right) => left.name.localeCompare(right.name)),
           autoTypeEnabled: entry.customData?.get(AUTO_TYPE_ENABLED_KEY)?.value !== 'false',
           autoTypeSequence:
             entry.customData?.get(AUTO_TYPE_SEQUENCE_KEY)?.value || DEFAULT_AUTO_TYPE_SEQUENCE,

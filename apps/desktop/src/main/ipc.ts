@@ -132,6 +132,55 @@ export function registerIpc(
     },
   );
 
+  ipcMain.handle('database:add-attachments', async (_event, sessionId: string, entryId: string) => {
+    try {
+      const result = await dialog.showOpenDialog({
+        title: 'Добавить вложения',
+        properties: ['openFile', 'multiSelections'],
+      });
+      if (result.canceled || result.filePaths.length === 0) {
+        return { ok: true, data: databases.getView(sessionId) };
+      }
+      return {
+        ok: true,
+        data: await databases.addAttachments(sessionId, entryId, result.filePaths),
+      };
+    } catch (error) {
+      return toApiError(error);
+    }
+  });
+
+  ipcMain.handle(
+    'database:export-attachment',
+    async (_event, sessionId: string, entryId: string, name: string) => {
+      try {
+        const result = await dialog.showSaveDialog({
+          title: 'Сохранить вложение',
+          defaultPath: name,
+          properties: ['createDirectory', 'showOverwriteConfirmation'],
+        });
+        if (result.canceled || !result.filePath) {
+          return { ok: true, data: false };
+        }
+        await databases.exportAttachment(sessionId, entryId, name, result.filePath);
+        return { ok: true, data: true };
+      } catch (error) {
+        return toApiError(error);
+      }
+    },
+  );
+
+  ipcMain.handle(
+    'database:delete-attachment',
+    (_event, sessionId: string, entryId: string, name: string) => {
+      try {
+        return { ok: true, data: databases.deleteAttachment(sessionId, entryId, name) };
+      } catch (error) {
+        return toApiError(error);
+      }
+    },
+  );
+
   ipcMain.handle(
     'autotype:set-selection',
     (_event, sessionId: string | null, entryId: string | null) => {

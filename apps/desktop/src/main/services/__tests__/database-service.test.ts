@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseService } from '../database-service';
@@ -177,6 +177,70 @@ describe('DatabaseService', () => {
       ),
     ).toBe('token-secret-123');
     await second.service.closeDatabase(reopened.sessionId);
+  }, 30_000);
+
+  it('adds, exports, persists and deletes entry attachments', async () => {
+    const { root, service } = await createHarness();
+    const filePath = path.join(root, 'Attachments.kdbx');
+    const password = 'PassDeck-Attachments-2026!';
+    const created = await service.createDatabase({
+      path: filePath,
+      password,
+      name: 'Attachments',
+    });
+    const groupId = created.groups[0]!.id;
+    const changed = service.saveEntry({
+      sessionId: created.sessionId,
+      groupId,
+      title: 'Entry with files',
+      username: '',
+      password: '',
+      url: '',
+      notes: '',
+      tags: [],
+      favorite: false,
+      expires: false,
+    });
+    const entryId = changed.entries[0]!.id;
+    const textPath = path.join(root, 'notes.txt');
+    const binaryPath = path.join(root, 'sample.bin');
+    await writeFile(textPath, 'attachment text', 'utf8');
+    await writeFile(binaryPath, Uint8Array.from([0, 1, 2, 3, 255]));
+
+    const withAttachments = await service.addAttachments(created.sessionId, entryId, [
+      textPath,
+      binaryPath,
+    ]);
+    expect(withAttachments.entries[0]!.attachments).toEqual([
+      { name: 'notes.txt', size: 15 },
+      { name: 'sample.bin', size: 5 },
+    ]);
+
+    const exportedPath = path.join(root, 'exported-notes.txt');
+    await service.exportAttachment(created.sessionId, entryId, 'notes.txt', exportedPath);
+    expect(await readFile(exportedPath, 'utf8')).toBe('attachment text');
+    await expect(service.addAttachments(created.sessionId, entryId, [textPath])).rejects.toThrow(
+      'уже существует',
+    );
+
+    await service.saveDatabase(created.sessionId);
+    await service.closeDatabase(created.sessionId);
+
+    const second = await createHarness();
+    const reopened = await second.service.openDatabase({ path: filePath, password });
+    expect(reopened.entries[0]!.attachments).toEqual([
+      { name: 'notes.txt', size: 15 },
+      { name: 'sample.bin', size: 5 },
+    ]);
+    const reopenedEntryId = reopened.entries[0]!.id;
+    second.service.deleteAttachment(reopened.sessionId, reopenedEntryId, 'notes.txt');
+    await second.service.saveDatabase(reopened.sessionId);
+    await second.service.closeDatabase(reopened.sessionId);
+
+    const third = await createHarness();
+    const finalView = await third.service.openDatabase({ path: filePath, password });
+    expect(finalView.entries[0]!.attachments).toEqual([{ name: 'sample.bin', size: 5 }]);
+    await third.service.closeDatabase(finalView.sessionId);
   }, 30_000);
 
   it('rejects empty, reserved and duplicate custom field names without mutating the entry', async () => {

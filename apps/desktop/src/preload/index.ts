@@ -27,6 +27,12 @@ const api: PassDeckApi = {
       ipcRenderer.invoke('database:reveal-password', sessionId, entryId),
     revealCustomField: (sessionId, entryId, key) =>
       ipcRenderer.invoke('database:reveal-custom-field', sessionId, entryId, key),
+    addAttachments: (sessionId, entryId) =>
+      ipcRenderer.invoke('database:add-attachments', sessionId, entryId),
+    exportAttachment: (sessionId, entryId, name) =>
+      ipcRenderer.invoke('database:export-attachment', sessionId, entryId, name),
+    deleteAttachment: (sessionId, entryId, name) =>
+      ipcRenderer.invoke('database:delete-attachment', sessionId, entryId, name),
   },
 
   autoType: {

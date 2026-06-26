@@ -77,6 +77,16 @@ function basename(filePath: string): string {
   return filePath.split(/[\\/]/).pop() || filePath;
 }
 
+function formatFileSize(size: number): string {
+  if (size < 1024) {
+    return `${size} Б`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(size < 10 * 1024 ? 1 : 0)} КБ`;
+  }
+  return `${(size / (1024 * 1024)).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} МБ`;
+}
+
 function resultMessage(result: { error?: { message: string; details?: string } }): string {
   return result.error?.details
     ? `${result.error.message}\n${result.error.details}`
@@ -104,6 +114,10 @@ export function App() {
   const [groupName, setGroupName] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<EntrySummary | null>(null);
+  const [confirmAttachmentDelete, setConfirmAttachmentDelete] = useState<{
+    entry: EntrySummary;
+    name: string;
+  } | null>(null);
   const [revealed, setRevealed] = useState<{ entryId: string; key: string; value: string } | null>(
     null,
   );
@@ -397,10 +411,7 @@ export function App() {
       return;
     }
 
-    const result = await window.passdeck.database.revealPassword(
-      active.sessionId,
-      editor.entry.id,
-    );
+    const result = await window.passdeck.database.revealPassword(active.sessionId, editor.entry.id);
     if (!result.ok || result.data === undefined) {
       setError(resultMessage(result));
       return;
@@ -550,6 +561,64 @@ export function App() {
     setConfirmDelete(null);
     setSelectedEntryId(null);
     setToast('Запись перемещена в корзину');
+  }
+
+  async function addAttachments(entry: EntrySummary): Promise<void> {
+    if (!active) {
+      return;
+    }
+    const result = await window.passdeck.database.addAttachments(active.sessionId, entry.id);
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+    updateSession(result.data);
+    setSelectedGroupId(entry.groupId);
+    setSelectedEntryId(entry.id);
+    const nextAttachmentCount = result.data.entries.find((item) => item.id === entry.id)
+      ?.attachments.length;
+    if (nextAttachmentCount !== entry.attachments.length) {
+      setToast('Вложения добавлены');
+    }
+  }
+
+  async function exportAttachment(entry: EntrySummary, name: string): Promise<void> {
+    if (!active) {
+      return;
+    }
+    const result = await window.passdeck.database.exportAttachment(
+      active.sessionId,
+      entry.id,
+      name,
+    );
+    if (!result.ok) {
+      setError(resultMessage(result));
+      return;
+    }
+    if (result.data) {
+      setToast('Вложение сохранено');
+    }
+  }
+
+  async function deleteAttachment(): Promise<void> {
+    if (!active || !confirmAttachmentDelete) {
+      return;
+    }
+    const { entry, name } = confirmAttachmentDelete;
+    const result = await window.passdeck.database.deleteAttachment(
+      active.sessionId,
+      entry.id,
+      name,
+    );
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+    updateSession(result.data);
+    setSelectedGroupId(entry.groupId);
+    setSelectedEntryId(entry.id);
+    setConfirmAttachmentDelete(null);
+    setToast('Вложение удалено');
   }
 
   async function copyValue(
@@ -1071,6 +1140,60 @@ export function App() {
                   </section>
                 ) : null}
 
+                <section className="attachments-details">
+                  <div className="section-heading section-heading--actions">
+                    <div>
+                      <label>Вложения</label>
+                      <span>{selectedEntry.attachments.length}</span>
+                    </div>
+                    <button
+                      className="button button--ghost button--small"
+                      type="button"
+                      onClick={() => void addAttachments(selectedEntry)}
+                      disabled={active.readOnly}
+                    >
+                      + Добавить
+                    </button>
+                  </div>
+                  {selectedEntry.attachments.length === 0 ? (
+                    <p className="attachments-empty">Вложений нет.</p>
+                  ) : (
+                    <div className="attachments-list">
+                      {selectedEntry.attachments.map((attachment) => (
+                        <div className="attachment-row" key={attachment.name}>
+                          <div className="attachment-row__icon">▧</div>
+                          <div className="attachment-row__main">
+                            <strong title={attachment.name}>{attachment.name}</strong>
+                            <span>{formatFileSize(attachment.size)}</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void exportAttachment(selectedEntry, attachment.name)}
+                            title="Сохранить вложение"
+                          >
+                            ↓
+                          </button>
+                          <button
+                            className="attachment-row__delete"
+                            type="button"
+                            onClick={() =>
+                              setConfirmAttachmentDelete({
+                                entry: selectedEntry,
+                                name: attachment.name,
+                              })
+                            }
+                            title="Удалить вложение"
+                            disabled={active.readOnly}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <small className="attachments-limit">До 25 МБ на файл и 100 МБ на запись.</small>
+                </section>
+
                 {selectedEntry.tags.length > 0 ? (
                   <div className="tag-list">
                     {selectedEntry.tags.map((tag) => (
@@ -1514,6 +1637,30 @@ export function App() {
               className="button button--danger"
               type="button"
               onClick={() => void deleteEntry()}
+            >
+              Удалить
+            </button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {confirmAttachmentDelete ? (
+        <Modal title="Удалить вложение?" onClose={() => setConfirmAttachmentDelete(null)}>
+          <p className="confirm-text">
+            Вложение «{confirmAttachmentDelete.name}» будет удалено из записи.
+          </p>
+          <div className="form__actions">
+            <button
+              className="button button--ghost"
+              type="button"
+              onClick={() => setConfirmAttachmentDelete(null)}
+            >
+              Отмена
+            </button>
+            <button
+              className="button button--danger"
+              type="button"
+              onClick={() => void deleteAttachment()}
             >
               Удалить
             </button>

@@ -38,6 +38,11 @@ export interface CustomFieldInput {
   originalKey?: string;
 }
 
+export interface AttachmentSummary {
+  name: string;
+  size: number;
+}
+
 export interface EntrySummary {
   id: string;
   groupId: string;
@@ -51,6 +56,7 @@ export interface EntrySummary {
   expiryTime?: string;
   modifiedAt?: string;
   customFields: CustomFieldSummary[];
+  attachments: AttachmentSummary[];
   autoTypeEnabled: boolean;
   autoTypeSequence: string;
 }
@@ -149,6 +155,13 @@ export interface PassDeckApi {
     close(sessionId: string): Promise<ApiResult<null>>;
     revealPassword(sessionId: string, entryId: string): Promise<ApiResult<string>>;
     revealCustomField(sessionId: string, entryId: string, key: string): Promise<ApiResult<string>>;
+    addAttachments(sessionId: string, entryId: string): Promise<ApiResult<DatabaseView>>;
+    exportAttachment(sessionId: string, entryId: string, name: string): Promise<ApiResult<boolean>>;
+    deleteAttachment(
+      sessionId: string,
+      entryId: string,
+      name: string,
+    ): Promise<ApiResult<DatabaseView>>;
   };
   autoType: {
     setSelection(sessionId: string | null, entryId: string | null): Promise<ApiResult<null>>;

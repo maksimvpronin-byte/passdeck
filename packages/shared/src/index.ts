@@ -23,6 +23,21 @@ export interface AppSettings {
 
 export const DEFAULT_AUTO_TYPE_SEQUENCE = '{USERNAME}{TAB}{PASSWORD}{ENTER}';
 
+export interface CustomFieldSummary {
+  key: string;
+  value: string;
+  protected: boolean;
+  hasValue: boolean;
+}
+
+export interface CustomFieldInput {
+  key: string;
+  value?: string;
+  protected: boolean;
+  preserveValue?: boolean;
+  originalKey?: string;
+}
+
 export interface EntrySummary {
   id: string;
   groupId: string;
@@ -35,7 +50,7 @@ export interface EntrySummary {
   expires: boolean;
   expiryTime?: string;
   modifiedAt?: string;
-  customFields: Array<{ key: string; value: string; protected: boolean }>;
+  customFields: CustomFieldSummary[];
   autoTypeEnabled: boolean;
   autoTypeSequence: string;
 }
@@ -85,7 +100,7 @@ export interface SaveEntryRequest {
   favorite: boolean;
   expires: boolean;
   expiryTime?: string;
-  customFields?: Array<{ key: string; value: string; protected: boolean }>;
+  customFields?: CustomFieldInput[];
   autoTypeEnabled?: boolean;
   autoTypeSequence?: string;
 }
@@ -98,7 +113,7 @@ export interface CreateGroupRequest {
 
 export interface CopySecretRequest {
   value: string;
-  kind: 'password' | 'username' | 'url';
+  kind: 'password' | 'username' | 'url' | 'custom';
 }
 
 export interface ApiResult<T> {
@@ -133,6 +148,7 @@ export interface PassDeckApi {
     unlock(sessionId: string, password: string): Promise<ApiResult<DatabaseView>>;
     close(sessionId: string): Promise<ApiResult<null>>;
     revealPassword(sessionId: string, entryId: string): Promise<ApiResult<string>>;
+    revealCustomField(sessionId: string, entryId: string, key: string): Promise<ApiResult<string>>;
   };
   autoType: {
     setSelection(sessionId: string | null, entryId: string | null): Promise<ApiResult<null>>;

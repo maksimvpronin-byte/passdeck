@@ -122,6 +122,17 @@ export function registerIpc(
   });
 
   ipcMain.handle(
+    'database:reveal-custom-field',
+    (_event, sessionId: string, entryId: string, key: string) => {
+      try {
+        return { ok: true, data: databases.revealCustomField(sessionId, entryId, key) };
+      } catch (error) {
+        return toApiError(error);
+      }
+    },
+  );
+
+  ipcMain.handle(
     'autotype:set-selection',
     (_event, sessionId: string | null, entryId: string | null) => {
       try {
@@ -138,7 +149,7 @@ export function registerIpc(
       const currentValue = request.value;
       const appSettings = settings.get();
       const seconds =
-        request.kind === 'password'
+        request.kind === 'password' || request.kind === 'custom'
           ? appSettings.clipboardPasswordSeconds
           : request.kind === 'username'
             ? appSettings.clipboardUsernameSeconds

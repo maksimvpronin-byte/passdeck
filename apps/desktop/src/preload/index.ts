@@ -25,6 +25,8 @@ const api: PassDeckApi = {
     close: (sessionId) => ipcRenderer.invoke('database:close', sessionId),
     revealPassword: (sessionId, entryId) =>
       ipcRenderer.invoke('database:reveal-password', sessionId, entryId),
+    revealCustomField: (sessionId, entryId, key) =>
+      ipcRenderer.invoke('database:reveal-custom-field', sessionId, entryId, key),
   },
 
   autoType: {

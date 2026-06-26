@@ -1,8 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_AUTO_TYPE_SEQUENCE } from '@passdeck/shared';
-import type { AppSettings, DatabaseView, EntrySummary, SaveEntryRequest } from '@passdeck/shared';
+import type {
+  AppSettings,
+  CustomFieldInput,
+  DatabaseView,
+  EntrySummary,
+  SaveEntryRequest,
+} from '@passdeck/shared';
 import { Logo } from './components/Logo';
 import { Modal } from './components/Modal';
+
+type EditorCustomField = {
+  id: string;
+  key: string;
+  value: string;
+  protected: boolean;
+  preserveValue: boolean;
+  hasStoredValue: boolean;
+  originalKey?: string;
+};
 
 type EditorState = {
   entry?: EntrySummary;
@@ -10,14 +26,15 @@ type EditorState = {
   title: string;
   username: string;
   password: string;
+  passwordVisible: boolean;
+  passwordLoaded: boolean;
   url: string;
   notes: string;
   tags: string;
   favorite: boolean;
   expires: boolean;
   expiryTime: string;
-  autoTypeEnabled: boolean;
-  autoTypeSequence: string;
+  customFields: EditorCustomField[];
 };
 
 const emptyEditor = (groupId: string): EditorState => ({
@@ -25,15 +42,36 @@ const emptyEditor = (groupId: string): EditorState => ({
   title: '',
   username: '',
   password: '',
+  passwordVisible: false,
+  passwordLoaded: true,
   url: '',
   notes: '',
   tags: '',
   favorite: false,
   expires: false,
   expiryTime: '',
-  autoTypeEnabled: true,
-  autoTypeSequence: DEFAULT_AUTO_TYPE_SEQUENCE,
+  customFields: [],
 });
+
+const RESERVED_CUSTOM_FIELD_NAMES = new Set(['title', 'username', 'password', 'url', 'notes']);
+
+let customFieldIdSequence = 0;
+
+function createCustomFieldId(): string {
+  customFieldIdSequence += 1;
+  return `custom-field-${Date.now()}-${customFieldIdSequence}`;
+}
+
+function newCustomField(): EditorCustomField {
+  return {
+    id: createCustomFieldId(),
+    key: '',
+    value: '',
+    protected: false,
+    preserveValue: false,
+    hasStoredValue: false,
+  };
+}
 
 function basename(filePath: string): string {
   return filePath.split(/[\\/]/).pop() || filePath;
@@ -66,7 +104,9 @@ export function App() {
   const [groupName, setGroupName] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<EntrySummary | null>(null);
-  const [revealed, setRevealed] = useState<{ entryId: string; value: string } | null>(null);
+  const [revealed, setRevealed] = useState<{ entryId: string; key: string; value: string } | null>(
+    null,
+  );
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const revealTimer = useRef<number | null>(null);
@@ -175,7 +215,9 @@ export function App() {
           entry.url,
           entry.notes,
           entry.tags.join(' '),
-          ...entry.customFields.map((field) => `${field.key} ${field.value}`),
+          ...entry.customFields.map((field) =>
+            field.protected ? field.key : `${field.key} ${field.value}`,
+          ),
         ].some((value) => value.toLocaleLowerCase().includes(query));
       return groupMatch && queryMatch;
     });
@@ -319,16 +361,60 @@ export function App() {
             title: entry.title,
             username: entry.username,
             password: '',
+            passwordVisible: false,
+            passwordLoaded: false,
             url: entry.url,
             notes: entry.notes,
             tags: entry.tags.join(', '),
             favorite: entry.favorite,
             expires: entry.expires,
             expiryTime: entry.expiryTime?.slice(0, 10) ?? '',
-            autoTypeEnabled: entry.autoTypeEnabled,
-            autoTypeSequence: entry.autoTypeSequence,
+            customFields: entry.customFields.map((field) => ({
+              id: createCustomFieldId(),
+              key: field.key,
+              value: field.protected ? '' : field.value,
+              protected: field.protected,
+              preserveValue: field.protected,
+              hasStoredValue: field.hasValue,
+              originalKey: field.key,
+            })),
           }
         : emptyEditor(groupId),
+    );
+  }
+
+  async function toggleEditorPassword(): Promise<void> {
+    if (!active || !editor) {
+      return;
+    }
+
+    if (!editor.entry || editor.passwordLoaded || editor.password) {
+      setEditor({
+        ...editor,
+        passwordVisible: !editor.passwordVisible,
+        passwordLoaded: true,
+      });
+      return;
+    }
+
+    const result = await window.passdeck.database.revealPassword(
+      active.sessionId,
+      editor.entry.id,
+    );
+    if (!result.ok || result.data === undefined) {
+      setError(resultMessage(result));
+      return;
+    }
+
+    setEditor((current) =>
+      current && current.entry?.id === editor.entry?.id
+        ? {
+            ...current,
+            password: result.data ?? '',
+            passwordVisible: true,
+            passwordLoaded: true,
+          }
+        : current,
     );
   }
 
@@ -337,6 +423,39 @@ export function App() {
     if (!active || !editor) {
       return;
     }
+
+    const seenCustomFieldNames = new Set<string>();
+    const customFields: CustomFieldInput[] = [];
+    for (const field of editor.customFields) {
+      const key = field.key.trim();
+      const normalizedKey = key.toLowerCase();
+      if (!key) {
+        setError('Название пользовательского поля не может быть пустым.');
+        return;
+      }
+      if (RESERVED_CUSTOM_FIELD_NAMES.has(normalizedKey)) {
+        setError(`Имя «${key}» зарезервировано стандартным полем KDBX.`);
+        return;
+      }
+      if (seenCustomFieldNames.has(normalizedKey)) {
+        setError(`Пользовательское поле «${key}» указано несколько раз.`);
+        return;
+      }
+      seenCustomFieldNames.add(normalizedKey);
+
+      const customField: CustomFieldInput = {
+        key,
+        protected: field.protected,
+      };
+      if (field.preserveValue && field.originalKey) {
+        customField.preserveValue = true;
+        customField.originalKey = field.originalKey;
+      } else {
+        customField.value = field.value;
+      }
+      customFields.push(customField);
+    }
+
     const request: SaveEntryRequest = {
       sessionId: active.sessionId,
       ...(editor.entry ? { entryId: editor.entry.id } : {}),
@@ -355,8 +474,9 @@ export function App() {
       ...(editor.expires && editor.expiryTime
         ? { expiryTime: new Date(editor.expiryTime).toISOString() }
         : {}),
-      autoTypeEnabled: editor.autoTypeEnabled,
-      autoTypeSequence: editor.autoTypeSequence.trim() || DEFAULT_AUTO_TYPE_SEQUENCE,
+      autoTypeEnabled: true,
+      autoTypeSequence: DEFAULT_AUTO_TYPE_SEQUENCE,
+      customFields,
     };
     const result = await window.passdeck.database.saveEntry(request);
     if (!result.ok || !result.data) {
@@ -366,6 +486,35 @@ export function App() {
     updateSession(result.data);
     setEditor(null);
     setToast(editor.entry ? 'Запись изменена' : 'Запись создана');
+  }
+
+  function addCustomField(): void {
+    if (!editor) {
+      return;
+    }
+    setEditor({ ...editor, customFields: [...editor.customFields, newCustomField()] });
+  }
+
+  function updateCustomField(id: string, patch: Partial<Omit<EditorCustomField, 'id'>>): void {
+    if (!editor) {
+      return;
+    }
+    setEditor({
+      ...editor,
+      customFields: editor.customFields.map((field) =>
+        field.id === id ? { ...field, ...patch } : field,
+      ),
+    });
+  }
+
+  function removeCustomField(id: string): void {
+    if (!editor) {
+      return;
+    }
+    setEditor({
+      ...editor,
+      customFields: editor.customFields.filter((field) => field.id !== id),
+    });
   }
 
   async function submitGroup(event: React.FormEvent): Promise<void> {
@@ -403,7 +552,10 @@ export function App() {
     setToast('Запись перемещена в корзину');
   }
 
-  async function copyValue(value: string, kind: 'username' | 'password' | 'url'): Promise<void> {
+  async function copyValue(
+    value: string,
+    kind: 'username' | 'password' | 'url' | 'custom',
+  ): Promise<void> {
     const result = await window.passdeck.clipboard.copy({ value, kind });
     if (!result.ok) {
       setError(resultMessage(result));
@@ -414,7 +566,9 @@ export function App() {
         ? 'Пароль скопирован'
         : kind === 'username'
           ? 'Логин скопирован'
-          : 'URL скопирован',
+          : kind === 'custom'
+            ? 'Значение поля скопировано'
+            : 'URL скопирован',
     );
   }
 
@@ -434,7 +588,7 @@ export function App() {
     if (!active) {
       return;
     }
-    if (revealed?.entryId === entry.id) {
+    if (revealed?.entryId === entry.id && revealed.key === 'Password') {
       setRevealed(null);
       return;
     }
@@ -443,7 +597,55 @@ export function App() {
       setError(resultMessage(result));
       return;
     }
-    setRevealed({ entryId: entry.id, value: result.data });
+    setRevealed({ entryId: entry.id, key: 'Password', value: result.data });
+    if (revealTimer.current) {
+      window.clearTimeout(revealTimer.current);
+    }
+    revealTimer.current = window.setTimeout(() => setRevealed(null), 10_000);
+  }
+
+  async function copyCustomField(entry: EntrySummary, key: string): Promise<void> {
+    if (!active) {
+      return;
+    }
+    const field = entry.customFields.find((item) => item.key === key);
+    if (!field) {
+      return;
+    }
+    if (!field.protected) {
+      await copyValue(field.value, 'custom');
+      return;
+    }
+    const result = await window.passdeck.database.revealCustomField(
+      active.sessionId,
+      entry.id,
+      key,
+    );
+    if (!result.ok || result.data === undefined) {
+      setError(resultMessage(result));
+      return;
+    }
+    await copyValue(result.data, 'custom');
+  }
+
+  async function revealCustomField(entry: EntrySummary, key: string): Promise<void> {
+    if (!active) {
+      return;
+    }
+    if (revealed?.entryId === entry.id && revealed.key === key) {
+      setRevealed(null);
+      return;
+    }
+    const result = await window.passdeck.database.revealCustomField(
+      active.sessionId,
+      entry.id,
+      key,
+    );
+    if (!result.ok || result.data === undefined) {
+      setError(resultMessage(result));
+      return;
+    }
+    setRevealed({ entryId: entry.id, key, value: result.data });
     if (revealTimer.current) {
       window.clearTimeout(revealTimer.current);
     }
@@ -784,7 +986,9 @@ export function App() {
                     <label>Пароль</label>
                     <div className="secret-value">
                       <code>
-                        {revealed?.entryId === selectedEntry.id ? revealed.value : '••••••••••••'}
+                        {revealed?.entryId === selectedEntry.id && revealed.key === 'Password'
+                          ? revealed.value
+                          : '••••••••••••'}
                       </code>
                       <button
                         type="button"
@@ -815,6 +1019,57 @@ export function App() {
                       : {})}
                   />
                 </div>
+
+                {selectedEntry.customFields.length > 0 ? (
+                  <section className="custom-fields-details">
+                    <div className="section-heading">
+                      <label>Пользовательские поля</label>
+                      <span>{selectedEntry.customFields.length}</span>
+                    </div>
+                    <div className="field-stack field-stack--custom">
+                      {selectedEntry.customFields.map((field) =>
+                        field.protected ? (
+                          <div className="detail-field" key={field.key}>
+                            <label>
+                              {field.key} <span className="protected-badge">Защищено</span>
+                            </label>
+                            <div className="secret-value">
+                              <code>
+                                {revealed?.entryId === selectedEntry.id &&
+                                revealed.key === field.key
+                                  ? revealed.value || '—'
+                                  : field.hasValue
+                                    ? '••••••••••••'
+                                    : '—'}
+                              </code>
+                              <button
+                                type="button"
+                                onClick={() => void revealCustomField(selectedEntry, field.key)}
+                                title="Показать на 10 секунд"
+                              >
+                                ◉
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void copyCustomField(selectedEntry, field.key)}
+                                title="Копировать значение"
+                              >
+                                ▣
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <DetailField
+                            key={field.key}
+                            label={field.key}
+                            value={field.value || '—'}
+                            onCopy={() => void copyCustomField(selectedEntry, field.key)}
+                          />
+                        ),
+                      )}
+                    </div>
+                  </section>
+                ) : null}
 
                 {selectedEntry.tags.length > 0 ? (
                   <div className="tag-list">
@@ -948,7 +1203,7 @@ export function App() {
       {editor && active ? (
         <Modal
           title={editor.entry ? 'Редактирование записи' : 'Новая запись'}
-          width={680}
+          width={820}
           onClose={() => setEditor(null)}
         >
           <form className="form form--grid" onSubmit={(event) => void submitEntry(event)}>
@@ -968,12 +1223,31 @@ export function App() {
               />
             </label>
             <label>
-              <span>{editor.entry ? 'Новый пароль (необязательно)' : 'Пароль'}</span>
-              <input
-                type="password"
-                value={editor.password}
-                onChange={(event) => setEditor({ ...editor, password: event.target.value })}
-              />
+              <span>Пароль</span>
+              <div className="password-editor">
+                <input
+                  type={editor.passwordVisible ? 'text' : 'password'}
+                  value={editor.password}
+                  placeholder={editor.entry && !editor.passwordLoaded ? '••••••••••••' : ''}
+                  onChange={(event) =>
+                    setEditor({
+                      ...editor,
+                      password: event.target.value,
+                      passwordLoaded: true,
+                    })
+                  }
+                  autoComplete={editor.entry ? 'current-password' : 'new-password'}
+                />
+                <button
+                  className="password-editor__toggle"
+                  type="button"
+                  onClick={() => void toggleEditorPassword()}
+                  title={editor.passwordVisible ? 'Скрыть пароль' : 'Показать пароль'}
+                  aria-label={editor.passwordVisible ? 'Скрыть пароль' : 'Показать пароль'}
+                >
+                  ◉
+                </button>
+              </div>
             </label>
             <label className="span-2">
               <span>URL</span>
@@ -1011,6 +1285,78 @@ export function App() {
                 onChange={(event) => setEditor({ ...editor, notes: event.target.value })}
               />
             </label>
+            <section className="custom-fields-editor span-2">
+              <div className="custom-fields-editor__header">
+                <div>
+                  <span>Пользовательские поля</span>
+                  <small>Дополнительные поля записи KDBX</small>
+                </div>
+                <button className="button button--secondary" type="button" onClick={addCustomField}>
+                  + Добавить поле
+                </button>
+              </div>
+              {editor.customFields.length === 0 ? (
+                <p className="custom-fields-editor__empty">Дополнительных полей пока нет.</p>
+              ) : (
+                <div className="custom-fields-editor__list">
+                  {editor.customFields.map((field) => (
+                    <div className="custom-field-row" key={field.id}>
+                      <label>
+                        <span>Название</span>
+                        <input
+                          value={field.key}
+                          onChange={(event) =>
+                            updateCustomField(field.id, { key: event.target.value })
+                          }
+                          placeholder="Например, API token"
+                        />
+                      </label>
+                      <label>
+                        <span>Значение</span>
+                        <input
+                          type={field.protected ? 'password' : 'text'}
+                          value={field.value}
+                          onChange={(event) =>
+                            updateCustomField(field.id, {
+                              value: event.target.value,
+                              preserveValue: false,
+                            })
+                          }
+                          placeholder={
+                            field.preserveValue && field.hasStoredValue
+                              ? 'Сохранено — оставьте пустым, чтобы не менять'
+                              : 'Введите значение'
+                          }
+                        />
+                        {field.preserveValue && field.hasStoredValue ? (
+                          <small className="form__hint">
+                            Скрытое значение останется без изменений.
+                          </small>
+                        ) : null}
+                      </label>
+                      <label className="check custom-field-row__protected">
+                        <input
+                          type="checkbox"
+                          checked={field.protected}
+                          onChange={(event) =>
+                            updateCustomField(field.id, { protected: event.target.checked })
+                          }
+                        />
+                        <span>Защищённое</span>
+                      </label>
+                      <button
+                        className="icon-button custom-field-row__remove"
+                        type="button"
+                        onClick={() => removeCustomField(field.id)}
+                        title="Удалить поле"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
             <label className="check">
               <input
                 type="checkbox"
@@ -1035,32 +1381,6 @@ export function App() {
                   value={editor.expiryTime}
                   onChange={(event) => setEditor({ ...editor, expiryTime: event.target.value })}
                 />
-              </label>
-            ) : null}
-            <label className="check span-2">
-              <input
-                type="checkbox"
-                checked={editor.autoTypeEnabled}
-                onChange={(event) =>
-                  setEditor({ ...editor, autoTypeEnabled: event.target.checked })
-                }
-              />
-              <span>Разрешить Auto-Type для этой записи</span>
-            </label>
-            {editor.autoTypeEnabled ? (
-              <label className="span-2">
-                <span>Последовательность Auto-Type</span>
-                <input
-                  value={editor.autoTypeSequence}
-                  onChange={(event) =>
-                    setEditor({ ...editor, autoTypeSequence: event.target.value })
-                  }
-                  placeholder={DEFAULT_AUTO_TYPE_SEQUENCE}
-                />
-                <small className="form__hint">
-                  Доступны: {'{USERNAME}'}, {'{PASSWORD}'}, {'{URL}'}, {'{TAB}'}, {'{ENTER}'},
-                  {' {DELAY=500}'}.
-                </small>
               </label>
             ) : null}
             <div className="form__actions span-2">

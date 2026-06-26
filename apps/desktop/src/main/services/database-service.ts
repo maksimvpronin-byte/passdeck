@@ -19,6 +19,7 @@ import { DEFAULT_AUTO_TYPE_SEQUENCE } from '@passdeck/shared';
 import type {
   CreateDatabaseRequest,
   CreateGroupRequest,
+  CustomFieldInput,
   DatabaseView,
   EntrySummary,
   GroupSummary,
@@ -55,6 +56,9 @@ export interface AutoTypePayload {
 }
 
 const STANDARD_FIELDS = new Set(['Title', 'UserName', 'Password', 'URL', 'Notes']);
+const RESERVED_FIELD_NAMES = new Set(
+  [...STANDARD_FIELDS].map((fieldName) => fieldName.toLowerCase()),
+);
 const FAVORITE_KEY = 'PassDeck.Favorite';
 const AUTO_TYPE_ENABLED_KEY = 'PassDeck.AutoTypeEnabled';
 const AUTO_TYPE_SEQUENCE_KEY = 'PassDeck.AutoTypeSequence';
@@ -179,7 +183,7 @@ export class DatabaseService {
     db.setVersion(4);
     db.header.versionMinor = 1;
     db.setKdf(Consts.KdfId.Argon2id);
-    db.meta.generator = 'PassDeck 0.1.1';
+    db.meta.generator = 'PassDeck 0.2.0';
     db.meta.historyMaxItems = 10;
     db.createRecycleBin();
 
@@ -272,14 +276,22 @@ export class DatabaseService {
       throw new PassDeckError('GROUP_NOT_FOUND', 'Группа не найдена.');
     }
 
-    let entry: KdbxEntry;
+    let existingEntry: KdbxEntry | undefined;
     if (request.entryId) {
-      const existing = this.findEntry(db, request.entryId);
-      if (!existing) {
+      existingEntry = this.findEntry(db, request.entryId);
+      if (!existingEntry) {
         throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
       }
-      existing.pushHistory();
-      entry = existing;
+    }
+    const preparedCustomFields =
+      request.customFields === undefined
+        ? undefined
+        : this.prepareCustomFields(existingEntry, request.customFields);
+
+    let entry: KdbxEntry;
+    if (existingEntry) {
+      existingEntry.pushHistory();
+      entry = existingEntry;
       if (entry.parentGroup?.uuid.toString() !== group.uuid.toString()) {
         db.move(entry, group);
       }
@@ -312,19 +324,15 @@ export class DatabaseService {
       lastModified: new Date(),
     });
 
-    if (request.customFields !== undefined) {
+    if (preparedCustomFields !== undefined) {
       for (const key of [...entry.fields.keys()]) {
         if (!STANDARD_FIELDS.has(key)) {
           entry.fields.delete(key);
         }
       }
-      for (const field of request.customFields) {
-        const key = field.key.trim();
-        if (!key || STANDARD_FIELDS.has(key)) {
-          continue;
-        }
+      for (const field of preparedCustomFields) {
         entry.fields.set(
-          key,
+          field.key,
           field.protected ? ProtectedValue.fromString(field.value) : field.value,
         );
       }
@@ -403,21 +411,35 @@ export class DatabaseService {
     return fieldText(entry, 'Password');
   }
 
+  revealCustomField(sessionId: string, entryId: string, key: string): string {
+    const session = this.getUnlockedSession(sessionId);
+    const entry = this.findEntry(session.db, entryId);
+    if (!entry) {
+      throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
+    }
+    const fieldKey = key.trim();
+    if (!fieldKey || RESERVED_FIELD_NAMES.has(fieldKey.toLowerCase())) {
+      throw new PassDeckError('CUSTOM_FIELD_NOT_FOUND', 'Пользовательское поле не найдено.');
+    }
+    const value = entry.fields.get(fieldKey);
+    if (value === undefined) {
+      throw new PassDeckError('CUSTOM_FIELD_NOT_FOUND', 'Пользовательское поле не найдено.');
+    }
+    return value instanceof ProtectedValue ? value.getText() : value;
+  }
+
   getAutoTypePayload(sessionId: string, entryId: string): AutoTypePayload {
     const session = this.getUnlockedSession(sessionId);
     const entry = this.findEntry(session.db, entryId);
     if (!entry) {
       throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
     }
-    if (entry.customData?.get(AUTO_TYPE_ENABLED_KEY)?.value === 'false') {
-      throw new PassDeckError('AUTO_TYPE_DISABLED', 'Auto-Type отключён для этой записи.');
-    }
     return {
       title: fieldText(entry, 'Title') || 'Без названия',
       username: fieldText(entry, 'UserName'),
       password: fieldText(entry, 'Password'),
       url: fieldText(entry, 'URL'),
-      sequence: entry.customData?.get(AUTO_TYPE_SEQUENCE_KEY)?.value || DEFAULT_AUTO_TYPE_SEQUENCE,
+      sequence: DEFAULT_AUTO_TYPE_SEQUENCE,
     };
   }
 
@@ -446,6 +468,51 @@ export class DatabaseService {
     }
     this.sessions.clear();
     await this.settings.setLastOpenDatabases([]);
+  }
+
+  private prepareCustomFields(
+    entry: KdbxEntry | undefined,
+    fields: CustomFieldInput[],
+  ): Array<{ key: string; value: string; protected: boolean }> {
+    const seenKeys = new Set<string>();
+    return fields.map((field) => {
+      const key = field.key.trim();
+      const normalizedKey = key.toLowerCase();
+      if (!key) {
+        throw new PassDeckError(
+          'CUSTOM_FIELD_EMPTY_NAME',
+          'Название пользовательского поля не может быть пустым.',
+        );
+      }
+      if (RESERVED_FIELD_NAMES.has(normalizedKey)) {
+        throw new PassDeckError(
+          'CUSTOM_FIELD_RESERVED_NAME',
+          `Имя «${key}» зарезервировано стандартным полем KDBX.`,
+        );
+      }
+      if (seenKeys.has(normalizedKey)) {
+        throw new PassDeckError(
+          'CUSTOM_FIELD_DUPLICATE_NAME',
+          `Пользовательское поле «${key}» указано несколько раз.`,
+        );
+      }
+      seenKeys.add(normalizedKey);
+
+      let value = field.value ?? '';
+      if (field.preserveValue === true) {
+        const originalKey = (field.originalKey ?? key).trim();
+        const existingValue = entry?.fields.get(originalKey);
+        if (existingValue === undefined || STANDARD_FIELDS.has(originalKey)) {
+          throw new PassDeckError(
+            'CUSTOM_FIELD_SOURCE_NOT_FOUND',
+            `Не удалось сохранить скрытое значение поля «${originalKey}».`,
+          );
+        }
+        value = existingValue instanceof ProtectedValue ? existingValue.getText() : existingValue;
+      }
+
+      return { key, value, protected: field.protected };
+    });
   }
 
   private async loadKdbx(filePath: string, password: string): Promise<Kdbx> {
@@ -487,11 +554,16 @@ export class DatabaseService {
       for (const entry of group.entries) {
         const customFields = [...entry.fields.entries()]
           .filter(([key]) => !STANDARD_FIELDS.has(key))
-          .map(([key, value]) => ({
-            key,
-            value: value instanceof ProtectedValue ? '••••••' : value,
-            protected: value instanceof ProtectedValue,
-          }));
+          .map(([key, value]) => {
+            const isProtected = value instanceof ProtectedValue;
+            const plainValue = isProtected ? value.getText() : value;
+            return {
+              key,
+              value: isProtected ? '' : plainValue,
+              protected: isProtected,
+              hasValue: plainValue.length > 0,
+            };
+          });
         entries.push({
           id: entry.uuid.toString(),
           groupId,

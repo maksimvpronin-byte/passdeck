@@ -1,6 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell, Tray, Menu } from 'electron';
 import path from 'node:path';
-import { AutoTypeService } from './services/auto-type-service';
+import {
+  AUTO_TYPE_SHORTCUT_LABEL,
+  AutoTypeService,
+} from './services/auto-type-service';
 import { DatabaseService } from './services/database-service';
 import { SettingsStore } from './services/settings-store';
 import { registerIpc } from './ipc';
@@ -182,11 +185,14 @@ if (!gotLock) {
     mainWindow = createWindow();
     createTray();
     const shortcutRegistered = autoType.registerShortcut();
-    if (process.platform === 'win32' && !shortcutRegistered) {
+    if (
+    (process.platform === 'win32' || process.platform === 'darwin') &&
+    !shortcutRegistered
+  ) {
       mainWindow.webContents.once('did-finish-load', () => {
         mainWindow?.webContents.send(
           'autotype:error',
-          'Не удалось зарегистрировать Ctrl+Alt+A. Возможно, сочетание занято другим приложением.',
+          `Не удалось зарегистрировать ${AUTO_TYPE_SHORTCUT_LABEL}. Возможно, сочетание занято другим приложением.`,
         );
       });
     }

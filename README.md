@@ -73,7 +73,7 @@ npm audit --audit-level=high
 release\PassDeck-Portable-0.2.0-x64.exe
 ```
 
-Скрипт использует существующий `node_modules`, а при его отсутствии выполняет `npm ci`. Затем запускаются аудит, lint, typecheck, тесты и сборка. Для чистой переустановки используйте `./build-portable-windows.ps1 -CleanInstall`.
+Скрипт использует существующий `node_modules`, а при его отсутствии выполняет `npm ci`. Затем запускаются аудит, lint, typecheck, тесты и сборка. Electron Builder создаёт единственный portable-артефакт сразу в корневой папке `release`; копия в `apps/desktop/release` не создаётся. Для чистой переустановки используйте `./build-portable-windows.ps1 -CleanInstall`.
 
 ## macOS ARM
 

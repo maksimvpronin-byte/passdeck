@@ -2,7 +2,7 @@ appId: com.maksimpronin.passdeck
 productName: PassDeck
 copyright: Copyright © 2026 Maxim Pronin
 directories:
-  output: release
+  output: ../../release
   buildResources: build
 files:
   - dist/**/*

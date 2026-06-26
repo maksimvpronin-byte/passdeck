@@ -64,18 +64,24 @@ Write-Host "Тесты..."
 & npm.cmd run test
 if ($LASTEXITCODE -ne 0) { throw "Тесты завершились с ошибкой." }
 
+$ArtifactName = "PassDeck-Portable-$Version-x64.exe"
+$ReleaseDir = Join-Path $ProjectRoot "release"
+$ArtifactPath = Join-Path $ReleaseDir $ArtifactName
+$LegacyReleaseDir = Join-Path $ProjectRoot "apps\desktop\release"
+
+New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
+Remove-Item $ArtifactPath -Force -ErrorAction SilentlyContinue
+Remove-Item $LegacyReleaseDir -Recurse -Force -ErrorAction SilentlyContinue
+
 Write-Host "Сборка Windows Portable..."
 & npm.cmd run package:win
 if ($LASTEXITCODE -ne 0) { throw "Сборка portable завершилась с ошибкой." }
 
-$ArtifactName = "PassDeck-Portable-$Version-x64.exe"
-$SourceArtifact = Join-Path $ProjectRoot "apps\desktop\release\$ArtifactName"
-$ReleaseDir = Join-Path $ProjectRoot "release"
-New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
-if (-not (Test-Path $SourceArtifact)) {
-    throw "Сборка завершилась, но файл не найден: $SourceArtifact"
+Remove-Item $LegacyReleaseDir -Recurse -Force -ErrorAction SilentlyContinue
+
+if (-not (Test-Path $ArtifactPath)) {
+    throw "Сборка завершилась, но файл не найден: $ArtifactPath"
 }
-Copy-Item $SourceArtifact (Join-Path $ReleaseDir $ArtifactName) -Force
 
 Write-Host ""
 Write-Host "Готово: release\$ArtifactName" -ForegroundColor Green

@@ -1,6 +1,6 @@
 {
   "name": "passdeck",
-  "version": "0.2.1",
+  "version": "0.3.0-touchid",
   "private": true,
   "description": "Local-first portable KDBX password manager",
   "license": "MIT",

@@ -1,6 +1,6 @@
 {
   "name": "@passdeck/desktop",
-  "version": "0.2.1",
+  "version": "0.3.0-touchid",
   "private": true,
   "description": "PassDeck desktop application",
   "license": "MIT",

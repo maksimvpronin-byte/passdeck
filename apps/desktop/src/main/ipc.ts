@@ -11,17 +11,26 @@ import type {
 } from '@passdeck/shared';
 import type { AutoTypeService } from './services/auto-type-service';
 import type { DatabaseService } from './services/database-service';
-import { toApiError } from './services/errors';
-import type { SettingsStore } from './services/settings-store';
+import type { BiometricAuthContext, BioTokenForIPC } from './types/bio-token';
 
+import { toApiError } from './services/errors';
+
+/**
+ * Регистратор IPC-каналов с поддержкой биометрической авторизации.
+ * 
+ * Whitelisted каналы для биометрии:
+ * - auth:bio-init — инициализация токена разблокировки (создаётся в main process)
+ * - auth:bio-unlock — разблокировка базы по Touch ID / Face ID
+ */
 export function registerIpc(
-  settings: SettingsStore,
+  context: BiometricAuthContext,
   databases: DatabaseService,
   autoType: AutoTypeService,
 ): void {
-  ipcMain.handle('settings:get', () => settings.get());
-  ipcMain.handle('settings:update', (_event, patch: Partial<AppSettings>) =>
-    settings.update(patch),
+  // Настройки
+  ipcMain.handle('settings:get', () => context.settings.get());
+  ipcMain.handle('settings:update', (_event: Electron.IpcRendererEvent, patch: Partial<AppSettings>) =>
+    context.settings.update(patch),
   );
 
   ipcMain.handle('dialog:open', async () => {
@@ -33,7 +42,7 @@ export function registerIpc(
     return result.canceled ? [] : result.filePaths;
   });
 
-  ipcMain.handle('dialog:create', async (_event, defaultName: string) => {
+  ipcMain.handle('dialog:create', async (_event: Electron.IpcRendererEvent, defaultName: string) => {
     const result = await dialog.showSaveDialog({
       title: 'Создать базу KDBX',
       defaultPath: defaultName,
@@ -51,21 +60,21 @@ export function registerIpc(
       return toApiError(error);
     }
   });
-  ipcMain.handle('database:open', async (_event, request: OpenDatabaseRequest) => {
+  ipcMain.handle('database:open', async (_event: Electron.IpcRendererEvent, request: OpenDatabaseRequest) => {
     try {
       return { ok: true, data: await databases.openDatabase(request) };
     } catch (error) {
       return toApiError(error);
     }
   });
-  ipcMain.handle('database:create', async (_event, request: CreateDatabaseRequest) => {
+  ipcMain.handle('database:create', async (_event: Electron.IpcRendererEvent, request: CreateDatabaseRequest) => {
     try {
       return { ok: true, data: await databases.createDatabase(request) };
     } catch (error) {
       return toApiError(error);
     }
   });
-  ipcMain.handle('database:save', async (_event, sessionId: string) => {
+  ipcMain.handle('database:save', async (_event: Electron.IpcRendererEvent, sessionId: string) => {
     try {
       return { ok: true, data: await databases.saveDatabase(sessionId) };
     } catch (error) {
@@ -79,7 +88,7 @@ export function registerIpc(
       return toApiError(error);
     }
   });
-  ipcMain.handle('database:delete-entry', (_event, sessionId: string, entryId: string) => {
+  ipcMain.handle('database:delete-entry', (_event: Electron.IpcRendererEvent, sessionId: string, entryId: string) => {
     try {
       return { ok: true, data: databases.deleteEntry(sessionId, entryId) };
     } catch (error) {
@@ -108,21 +117,21 @@ export function registerIpc(
     }
   });
 
-  ipcMain.handle('database:lock', async (_event, sessionId: string) => {
+  ipcMain.handle('database:lock', async (_event: Electron.IpcRendererEvent, sessionId: string) => {
     try {
       return { ok: true, data: await databases.lockDatabase(sessionId) };
     } catch (error) {
       return toApiError(error);
     }
   });
-  ipcMain.handle('database:unlock', async (_event, sessionId: string, password: string) => {
+  ipcMain.handle('database:unlock', async (_event: Electron.IpcRendererEvent, sessionId: string, password: string) => {
     try {
       return { ok: true, data: await databases.unlockDatabase(sessionId, password) };
     } catch (error) {
       return toApiError(error);
     }
   });
-  ipcMain.handle('database:close', async (_event, sessionId: string) => {
+  ipcMain.handle('database:close', async (_event: Electron.IpcRendererEvent, sessionId: string) => {
     try {
       await databases.closeDatabase(sessionId);
       return { ok: true, data: null };
@@ -130,7 +139,7 @@ export function registerIpc(
       return toApiError(error);
     }
   });
-  ipcMain.handle('database:reveal-password', (_event, sessionId: string, entryId: string) => {
+  ipcMain.handle('database:reveal-password', (_event: Electron.IpcRendererEvent, sessionId: string, entryId: string) => {
     try {
       return { ok: true, data: databases.revealPassword(sessionId, entryId) };
     } catch (error) {
@@ -140,7 +149,7 @@ export function registerIpc(
 
   ipcMain.handle(
     'database:reveal-custom-field',
-    (_event, sessionId: string, entryId: string, key: string) => {
+    (_event: Electron.IpcRendererEvent, sessionId: string, entryId: string, key: string) => {
       try {
         return { ok: true, data: databases.revealCustomField(sessionId, entryId, key) };
       } catch (error) {
@@ -149,7 +158,7 @@ export function registerIpc(
     },
   );
 
-  ipcMain.handle('database:add-attachments', async (_event, sessionId: string, entryId: string) => {
+  ipcMain.handle('database:add-attachments', async (_event: Electron.IpcRendererEvent, sessionId: string, entryId: string) => {
     try {
       const result = await dialog.showOpenDialog({
         title: 'Добавить вложения',
@@ -169,7 +178,7 @@ export function registerIpc(
 
   ipcMain.handle(
     'database:export-attachment',
-    async (_event, sessionId: string, entryId: string, name: string) => {
+    async (_event: Electron.IpcRendererEvent, sessionId: string, entryId: string, name: string) => {
       try {
         const result = await dialog.showSaveDialog({
           title: 'Сохранить вложение',
@@ -189,7 +198,7 @@ export function registerIpc(
 
   ipcMain.handle(
     'database:delete-attachment',
-    (_event, sessionId: string, entryId: string, name: string) => {
+    (_event: Electron.IpcRendererEvent, sessionId: string, entryId: string, name: string) => {
       try {
         return { ok: true, data: databases.deleteAttachment(sessionId, entryId, name) };
       } catch (error) {
@@ -200,7 +209,7 @@ export function registerIpc(
 
   ipcMain.handle(
     'autotype:set-selection',
-    (_event, sessionId: string | null, entryId: string | null) => {
+    (_event: Electron.IpcRendererEvent, sessionId: string | null, entryId: string | null) => {
       try {
         autoType.setSelection(sessionId, entryId);
         return { ok: true, data: null };
@@ -209,11 +218,58 @@ export function registerIpc(
       }
     },
   );
+
+  // Биометрическая авторизация (whitelisted для macOS)
+  ipcMain.handle('auth:bio-init', async (_event, request?: { masterPassword?: string }) => {
+    try {
+      const { bioService } = context;
+      // Создаём зашифрованный токен в main-процессе
+      const token = await bioService.initBioToken(request?.masterPassword);
+      // Преобразуем для передачи через IPC (hex-encoding)
+      return {
+        ok: true,
+        data: {
+          sessionId: token.sessionId,
+          ciphertext: token.ciphertext.toString('hex'),
+          iv: token.iv.toString('hex'),
+          tag: token.tag.toString('hex'),
+        },
+      };
+    } catch (error) {
+      console.error('[IPC] auth:bio-init error:', error);
+      return toApiError(error);
+    }
+  });
+
+  ipcMain.handle('auth:bio-unlock', async (_event, request: { sessionId: string; ciphertext: string; iv: string; tag: string }) => {
+    try {
+      const { bioService } = context;
+      // Расшифровываем токен обратно и вызываем unlock
+      const tokenBuffer = Buffer.from(request.ciphertext, 'hex');
+      const ivBuffer = Buffer.from(request.iv, 'hex');
+      const tagBuffer = Buffer.from(request.tag, 'hex');
+      
+      const result = await bioService.unlockWithBiometrics(tokenBuffer, ivBuffer, tagBuffer);
+      return {
+        ok: true,
+        data: {
+          success: result.success,
+          error: result.error,
+          details: result.details,
+        },
+      };
+    } catch (error) {
+      console.error('[IPC] auth:bio-unlock error:', error);
+      return toApiError(error);
+    }
+  });
+
+  // Копирование секрета
   ipcMain.handle('clipboard:copy', (_event, request: CopySecretRequest) => {
     try {
       clipboard.writeText(request.value);
       const currentValue = request.value;
-      const appSettings = settings.get();
+      const appSettings = context.settings.get();
       const seconds =
         request.kind === 'password' || request.kind === 'custom'
           ? appSettings.clipboardPasswordSeconds
@@ -234,6 +290,7 @@ export function registerIpc(
     }
   });
 
+  // Блокировка всех баз
   ipcMain.handle('app:lock-all', async () => {
     try {
       for (const view of databases.listViews()) {

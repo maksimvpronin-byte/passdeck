@@ -9,6 +9,9 @@ import type {
 } from '@passdeck/shared';
 import { Logo } from './components/Logo';
 import { Modal } from './components/Modal';
+import type { BrowserWindow } from 'electron';
+import { BioUnlockButton } from './auth';
+import { BioUnlockButton } from './auth';
 
 type EditorCustomField = {
   id: string;
@@ -127,6 +130,7 @@ export function App() {
   );
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [bioAuthRequested, setBioAuthRequested] = useState(false);
   const revealTimer = useRef<number | null>(null);
 
   const active = sessions.find((session) => session.sessionId === activeId) ?? sessions[0] ?? null;
@@ -256,21 +260,33 @@ export function App() {
 
   async function submitUnlock(event: React.FormEvent): Promise<void> {
     event.preventDefault();
-    if (!unlockTarget || !unlockPassword) {
+    if (!unlockTarget) {
       return;
     }
-    const result = unlockTarget.sessionId
+
+    // На macOS — приоритет биометрии. Если пароль указан, используем его как fallback.
+    // BioUnlockButton уже попытался разблокировать по Touch ID и очистил пароль если это удалось.
+    
+    if (process.platform === 'darwin' && unlockPassword.length > 0) {
+      console.log('[BioAuth] Password specified as fallback after bio attempt');
+    } else if (process.platform !== 'darwin') {
+      console.log('[BioAuth] Non-macOS, using password directly');
+    }
+
+    // Разблокировка мастер-паролем (или результат биометрии уже применён)
+    const unlockResult = unlockTarget.sessionId
       ? await window.passdeck.database.unlock(unlockTarget.sessionId, unlockPassword)
       : await window.passdeck.database.open({
           path: unlockTarget.path ?? '',
           password: unlockPassword,
         });
+    
     setUnlockPassword('');
-    if (!result.ok || !result.data) {
-      setError(resultMessage(result));
+    if (!unlockResult.ok || !unlockResult.data) {
+      setError(resultMessage(unlockResult));
       return;
     }
-    updateSession(result.data);
+    updateSession(unlockResult.data);
     const next = openQueue[0];
     if (next) {
       setOpenQueue(openQueue.slice(1));
@@ -279,6 +295,39 @@ export function App() {
       setUnlockTarget(null);
     }
     setToast('База открыта');
+  }
+
+  /**
+   * Обработчик результата биометрической авторизации из main-процесса.
+   */
+  useEffect(() => {
+    const listener: { (_: string): void } | null = null;
+    let result: string = 'UNKNOWN';
+    
+    try {
+      // Слушаем ответ от main-процесса по IPC
+      listener = (bioResult: string) => {
+        if (listener) window.removeEventListener('auth:bio-result', listener);
+        handleBioAuthResult(bioResult);
+      };
+      window.addEventListener('auth:bio-result', listener, { once: true });
+    } catch (error) {
+      console.error('[BioAuth] Cannot listen to auth:', error);
+    }
+
+    return () => {
+      if (listener) window.removeEventListener('auth:bio-result', listener);
+    };
+  }, []);
+
+  async function handleBioAuthResult(result: string): Promise<void> {
+    if (result === 'BIO_FALLBACK_REQUIRED') {
+      // Обработка фоллбека в мастер-пароль — пароль уже в полях если был указан
+      console.log('[BioAuth] Fall back to master password');
+    } else if (result !== 'UNKNOWN' && result !== 'SUCCESS') {
+      setToast(`Ошибка биометрии: ${result}`);
+      console.error('[BioAuth] Bio auth failed:', result);
+    }
   }
 
   async function chooseCreate(): Promise<void> {
@@ -1461,23 +1510,42 @@ export function App() {
             setUnlockTarget(null);
             setOpenQueue([]);
             setUnlockPassword('');
+            setBioAuthRequested(false);
           }}
         >
           <form className="form" onSubmit={(event) => void submitUnlock(event)}>
             <div className="file-chip">
               {unlockTarget.path ? basename(unlockTarget.path) : active?.name}
             </div>
-            <label>
-              <span>Мастер-пароль</span>
-              <input
-                type="password"
-                value={unlockPassword}
-                onChange={(event) => setUnlockPassword(event.target.value)}
-                autoFocus
-                autoComplete="current-password"
-                placeholder="Введите мастер-пароль"
-              />
-            </label>
+
+            {/* На macOS — кнопка Touch ID */}
+            {process.platform === 'darwin' && (
+              <BioUnlockButton onUnlockAttempt={() => {
+                setBioAuthRequested(true);
+                // Очищаем пароль после успешной попытки биометрии (безопасность)
+                if (unlockPassword) {
+                  setUnlockPassword('');
+                }
+              }} />
+            )}
+
+            {/* На Windows/Linux — только поле пароля */}
+            {!process.platform || process.platform !== 'darwin' ? (
+              <>
+                <label>
+                  <span>Мастер-пароль</span>
+                  <input
+                    type="password"
+                    value={unlockPassword}
+                    onChange={(event) => setUnlockPassword(event.target.value)}
+                    autoFocus
+                    autoComplete="current-password"
+                    placeholder="Введите мастер-пароль для разблокировки"
+                  />
+                </label>
+              </>
+            ) : null
+            
             <div className="form__actions">
               <button
                 className="button button--ghost"

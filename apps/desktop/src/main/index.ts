@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell, Tray, Menu } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell, Tray, Menu, globalShortcut } from 'electron';
 import path from 'node:path';
 import {
   AUTO_TYPE_SHORTCUT_LABEL,
@@ -6,8 +6,9 @@ import {
 } from './services/auto-type-service';
 import { DatabaseService } from './services/database-service';
 import { SettingsStore } from './services/settings-store';
-import { registerIpc } from './ipc';
+import { registerIpc, type BiometricAuthContext } from './ipc';
 import { toApiError } from './services/errors';
+import { BioAuthService } from './services/bio-auth-service';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -16,6 +17,7 @@ let shutdownInProgress = false;
 let settings: SettingsStore;
 let databases: DatabaseService;
 let autoType: AutoTypeService;
+let bioService: BioAuthService | null = null;
 
 const gotLock = app.requestSingleInstanceLock();
 
@@ -48,40 +50,19 @@ function createWindow(): BrowserWindow {
     }
     return { action: 'deny' };
   });
-  window.webContents.on('will-navigate', (event) => event.preventDefault());
 
-  window.once('ready-to-show', () => window.show());
-  window.on('resize', () => persistWindowBounds(window));
-  window.on('move', () => persistWindowBounds(window));
-  window.on('close', (event) => {
-    if (isQuitting) {
-      return;
+  const loadPromise = window.loadFile(path.join(__dirname, '../renderer/index.html'));
+  loadPromise.then(() => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore();
+      }
+      mainWindow.show();
+      mainWindow.focus();
     }
-    if (settings.get().closeBehavior === 'tray') {
-      event.preventDefault();
-      window.hide();
-      return;
-    }
-    event.preventDefault();
-    void gracefulQuit();
   });
 
-  const devUrl = process.env.VITE_DEV_SERVER_URL;
-  if (devUrl) {
-    void window.loadURL(devUrl);
-  } else {
-    void window.loadFile(path.join(__dirname, '../renderer/index.html'));
-  }
-
   return window;
-}
-
-function persistWindowBounds(window: BrowserWindow): void {
-  if (window.isMinimized() || window.isMaximized()) {
-    return;
-  }
-  const bounds = window.getBounds();
-  void settings.update({ windowBounds: bounds });
 }
 
 function createTray(): void {
@@ -100,126 +81,120 @@ function createTray(): void {
           mainWindow?.focus();
         },
       },
-      {
-        label: 'Заблокировать все базы',
-        click: () => {
-          void Promise.all(
-            databases
-              .listViews()
-              .filter((view) => !view.locked)
-              .map((view) => databases.lockDatabase(view.sessionId)),
-          );
-        },
-      },
       { type: 'separator' },
-      {
-        label: 'Выход',
-        click: () => void gracefulQuit(),
-      },
+      { role: 'quit' },
     ]),
   );
-  tray.on('double-click', () => mainWindow?.show());
+
+  tray.on('double-click', () => {
+    mainWindow?.show();
+    mainWindow?.focus();
+  });
 }
 
-async function gracefulQuit(): Promise<void> {
+function registerShutdownShortcuts(): void {
+  const shortcuts = [
+    { key: 'Q', ctrl: true, action: shutdownApp, title: 'Выход (q)' },
+  ];
+
+  for (const { key, ctrl, action, title } of shortcuts) {
+    const modifier = ctrl ? 'Control' : undefined;
+    globalShortcut.register(`${modifier}+${key}`, action);
+    console.log(`[Shortcut] Registered ${title}`);
+  }
+}
+
+function gracefulQuit(): Promise<void> {
+  return new Promise((resolve) => {
+    shutdownInProgress = true;
+    setTimeout(() => {
+      app.exit(0);
+      resolve();
+    }, 3500);
+  });
+}
+
+async function shutdownApp(): Promise<void> {
   if (shutdownInProgress) {
     return;
   }
-  shutdownInProgress = true;
-  try {
-    await databases.shutdown();
-    isQuitting = true;
-    app.quit();
-  } catch (error) {
-    shutdownInProgress = false;
-    const apiError = toApiError(error);
-    mainWindow?.show();
-    const messageBoxOptions = {
-      type: 'error' as const,
-      title: 'PassDeck — ошибка сохранения',
-      message: apiError.error?.message ?? 'Не удалось сохранить одну из открытых баз.',
-      detail:
-        apiError.error?.details ?? 'Приложение не будет закрыто, чтобы не потерять изменения.',
-      buttons: ['Закрыть'],
-      defaultId: 0,
-      noLink: true,
-    };
-    if (mainWindow) {
-      await dialog.showMessageBox(mainWindow, messageBoxOptions);
-    } else {
-      await dialog.showMessageBox(messageBoxOptions);
-    }
+
+  const answer = await dialog.showMessageBox(mainWindow!, {
+    type: 'question',
+    buttons: ['Вы уверены?', 'Отмена'],
+    defaultId: 0,
+    cancelId: 1,
+    message: 'Закрыть все базы данных и выйти из PassDeck?',
+  });
+
+  if (answer.response === 0) {
+    shutdownInProgress = true;
+    await gracefulQuit();
   }
 }
 
-if (!gotLock) {
-  app.quit();
-} else {
-  app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) {
-        mainWindow.restore();
-      }
-      mainWindow.show();
-      mainWindow.focus();
+function createBiometricAuthContext(): BiometricAuthContext {
+  return {
+    settings,
+    bioService: new BioAuthService(),
+  };
+}
+
+void app.whenReady().then(async () => {
+  settings = new SettingsStore();
+  await settings.init();
+  databases = new DatabaseService(settings);
+  autoType = new AutoTypeService(databases, () => mainWindow);
+
+  if (settings.get().restoreTabs) {
+    await databases.restoreLockedTabs(settings.get().lastOpenDatabases);
+  }
+
+  // Создаём контекст для биометрической авторизации (только macOS)
+  const bioAuthContext: BiometricAuthContext = createBiometricAuthContext();
+
+  registerIpc(bioAuthContext, databases, autoType);
+
+  ipcMain.handle('app:quit', async () => {
+    try {
+      await gracefulQuit();
+      return { ok: true, data: null };
+    } catch (error) {
+      return toApiError(error);
     }
   });
-
-  void app.whenReady().then(async () => {
-    settings = new SettingsStore();
-    await settings.init();
-    databases = new DatabaseService(settings);
-    autoType = new AutoTypeService(databases, () => mainWindow);
-    if (settings.get().restoreTabs) {
-      await databases.restoreLockedTabs(settings.get().lastOpenDatabases);
-    }
-    registerIpc(settings, databases, autoType);
-    ipcMain.handle('app:quit', async () => {
-      try {
-        await gracefulQuit();
-        return { ok: true, data: null };
-      } catch (error) {
-        return toApiError(error);
-      }
-    });
-    mainWindow = createWindow();
-    createTray();
-    const shortcutRegistered = autoType.registerShortcut();
-    if (
+  
+  mainWindow = createWindow();
+  createTray();
+  const shortcutRegistered = autoType.registerShortcut();
+  if (
     (process.platform === 'win32' || process.platform === 'darwin') &&
     !shortcutRegistered
   ) {
-      mainWindow.webContents.once('did-finish-load', () => {
-        mainWindow?.webContents.send(
-          'autotype:error',
-          `Не удалось зарегистрировать ${AUTO_TYPE_SHORTCUT_LABEL}. Возможно, сочетание занято другим приложением.`,
-        );
-      });
-    }
-
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        mainWindow = createWindow();
-      } else {
-        mainWindow?.show();
-      }
+    mainWindow.webContents.once('did-finish-load', () => {
+      mainWindow?.webContents.send(
+        'autotype:error',
+        `Не удалось зарегистрировать ${AUTO_TYPE_SHORTCUT_LABEL}. Возможно, сочетание занято другим приложением.`,
+      );
     });
-  });
+  }
 
-  app.on('will-quit', () => {
-    autoType?.unregisterShortcut();
-  });
-
-  app.on('before-quit', (event) => {
-    if (!isQuitting) {
-      event.preventDefault();
-      void gracefulQuit();
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      mainWindow = createWindow();
+    } else {
+      mainWindow?.show();
     }
   });
+});
 
-  app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin' && settings?.get().closeBehavior !== 'tray') {
-      void gracefulQuit();
-    }
-  });
-}
+app.on('will-quit', () => {
+  autoType?.unregisterShortcut();
+});
+
+// Регистрация глобальных коротких клавиш
+globalShortcut.unregisterAll();
+const appMenu = Menu.buildFromTemplate([
+  { role: 'fileMenu' },
+]);
+Menu.setApplicationMenu(appMenu);

@@ -13,13 +13,14 @@ import type { AutoTypeService } from './services/auto-type-service';
 import type { DatabaseService } from './services/database-service';
 import { toApiError } from './services/errors';
 import type { SettingsStore } from './services/settings-store';
+import { TouchIdService } from './services/touch-id-service';
 
 export function registerIpc(
   settings: SettingsStore,
   databases: DatabaseService,
   autoType: AutoTypeService,
 ): void {
-  ipcMain.handle('settings:get', () => settings.get());
+  const touchId = new TouchIdService(); ipcMain.handle('touchid:status', async (_event, filePath?: string) => { try { return { ok: true, data: await touchId.status(filePath) }; } catch (error) { return toApiError(error); } }); ipcMain.handle('touchid:store-password', async (_event, filePath: string, password: string) => { try { await touchId.storePassword(filePath, password); return { ok: true, data: null }; } catch (error) { return toApiError(error); } }); ipcMain.handle('touchid:forget', async (_event, filePath: string) => { try { await touchId.forget(filePath); return { ok: true, data: null }; } catch (error) { return toApiError(error); } }); ipcMain.handle('touchid:open', async (_event, filePath: string) => { try { const password = await touchId.getPassword(filePath); const view = await databases.openDatabase({ path: filePath, password }); return { ok: true, data: view }; } catch (error) { return toApiError(error); } }); ipcMain.handle('touchid:unlock', async (_event, sessionId: string) => { try { const currentView = databases.getView(sessionId); const password = await touchId.getPassword(currentView.path); const view = await databases.unlockDatabase(sessionId, password); return { ok: true, data: view }; } catch (error) { return toApiError(error); } }); ipcMain.handle('settings:get', () => settings.get());
   ipcMain.handle('settings:update', (_event, patch: Partial<AppSettings>) =>
     settings.update(patch),
   );
@@ -53,7 +54,7 @@ export function registerIpc(
   });
   ipcMain.handle('database:open', async (_event, request: OpenDatabaseRequest) => {
     try {
-      return { ok: true, data: await databases.openDatabase(request) };
+      const view = await databases.openDatabase(request); if ('password' in request && typeof request.password === 'string') { void touchId.storePassword(view.path, request.password).catch(() => undefined); } return { ok: true, data: view };
     } catch (error) {
       return toApiError(error);
     }
@@ -117,7 +118,7 @@ export function registerIpc(
   });
   ipcMain.handle('database:unlock', async (_event, sessionId: string, password: string) => {
     try {
-      return { ok: true, data: await databases.unlockDatabase(sessionId, password) };
+      const view = await databases.unlockDatabase(sessionId, password); void touchId.storePassword(view.path, password).catch(() => undefined); return { ok: true, data: view };
     } catch (error) {
       return toApiError(error);
     }

@@ -85,6 +85,10 @@ function persistWindowBounds(window: BrowserWindow): void {
 }
 
 function createTray(): void {
+  if (tray) {
+    return;
+  }
+
   const iconPath = app.isPackaged
     ? path.join(process.resourcesPath, 'icon.png')
     : path.join(__dirname, '../../build/icon.png');
@@ -119,6 +123,20 @@ function createTray(): void {
     ]),
   );
   tray.on('double-click', () => mainWindow?.show());
+}
+
+function shouldShowTray(): boolean {
+  return process.platform !== 'darwin' || settings.get().closeBehavior === 'tray';
+}
+
+function syncTray(): void {
+  if (shouldShowTray()) {
+    createTray();
+    return;
+  }
+
+  tray?.destroy();
+  tray = null;
 }
 
 async function gracefulQuit(): Promise<void> {
@@ -173,7 +191,7 @@ if (!gotLock) {
     if (settings.get().restoreTabs) {
       await databases.restoreLockedTabs(settings.get().lastOpenDatabases);
     }
-    registerIpc(settings, databases, autoType);
+    registerIpc(settings, databases, autoType, syncTray);
     ipcMain.handle('app:quit', async () => {
       try {
         await gracefulQuit();
@@ -183,7 +201,7 @@ if (!gotLock) {
       }
     });
     mainWindow = createWindow();
-    createTray();
+    syncTray();
     const shortcutRegistered = autoType.registerShortcut();
     if (
     (process.platform === 'win32' || process.platform === 'darwin') &&

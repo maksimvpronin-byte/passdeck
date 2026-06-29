@@ -19,11 +19,14 @@ export function registerIpc(
   settings: SettingsStore,
   databases: DatabaseService,
   autoType: AutoTypeService,
+  onSettingsUpdated?: (settings: AppSettings) => void,
 ): void {
   const touchId = new TouchIdService(); ipcMain.handle('touchid:status', async (_event, filePath?: string) => { try { return { ok: true, data: await touchId.status(filePath) }; } catch (error) { return toApiError(error); } }); ipcMain.handle('touchid:store-password', async (_event, filePath: string, password: string) => { try { await touchId.storePassword(filePath, password); return { ok: true, data: null }; } catch (error) { return toApiError(error); } }); ipcMain.handle('touchid:forget', async (_event, filePath: string) => { try { await touchId.forget(filePath); return { ok: true, data: null }; } catch (error) { return toApiError(error); } }); ipcMain.handle('touchid:open', async (_event, filePath: string) => { try { const password = await touchId.getPassword(filePath); const view = await databases.openDatabase({ path: filePath, password }); return { ok: true, data: view }; } catch (error) { return toApiError(error); } }); ipcMain.handle('touchid:unlock', async (_event, sessionId: string) => { try { const currentView = databases.getView(sessionId); const password = await touchId.getPassword(currentView.path); const view = await databases.unlockDatabase(sessionId, password); return { ok: true, data: view }; } catch (error) { return toApiError(error); } }); ipcMain.handle('settings:get', () => settings.get());
-  ipcMain.handle('settings:update', (_event, patch: Partial<AppSettings>) =>
-    settings.update(patch),
-  );
+  ipcMain.handle('settings:update', async (_event, patch: Partial<AppSettings>) => {
+    const next = await settings.update(patch);
+    onSettingsUpdated?.(next);
+    return next;
+  });
 
   ipcMain.handle('dialog:open', async () => {
     const result = await dialog.showOpenDialog({

@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import {
+  clipboard,
   globalShortcut,
   systemPreferences,
   type BrowserWindow,
@@ -18,7 +19,9 @@ import {
   AUTO_TYPE_MAC_SELF_TARGET_MARKER,
   AUTO_TYPE_MAC_SUCCESS_MARKER,
   AUTO_TYPE_MAC_TARGET_CHANGED_MARKER,
+  AUTO_TYPE_MAC_TARGET_PID_PREFIX,
   buildAutoTypeMacOsScript,
+  buildAutoTypeMacOsTargetScript,
   runAutoTypeMacOsScript,
 } from './auto-type-macos';
 import {
@@ -132,12 +135,64 @@ function isMacOsPermissionError(error: unknown): boolean {
   );
 }
 
-async function sendActionsToMacOs(actions: AutoTypeAction[]): Promise<void> {
+async function readMacOsTargetPid(): Promise<number> {
   let result: string;
 
   try {
     result = await runAutoTypeMacOsScript(
-      buildAutoTypeMacOsScript(process.pid, actions),
+      buildAutoTypeMacOsTargetScript(process.pid),
+    );
+  } catch (error) {
+    if (isMacOsPermissionError(error)) {
+      throw new PassDeckError(
+        'AUTO_TYPE_PERMISSION',
+        'Разрешите PassDeck в «Системные настройки → Конфиденциальность и безопасность → Универсальный доступ». При запросе «Автоматизация» разрешите управление System Events, затем повторите ⌘+⌥+A.',
+      );
+    }
+    throw error;
+  }
+
+  if (result.includes(AUTO_TYPE_MAC_SELF_TARGET_MARKER)) {
+    throw new PassDeckError(
+      'AUTO_TYPE_TARGET',
+      'Перейдите в окно сайта или приложения и нажмите ⌘+⌥+A ещё раз.',
+    );
+  }
+
+  if (result.includes(AUTO_TYPE_MAC_NO_TARGET_MARKER)) {
+    throw new PassDeckError(
+      'AUTO_TYPE_TARGET',
+      'Не удалось определить активное приложение macOS.',
+    );
+  }
+
+  if (!result.startsWith(AUTO_TYPE_MAC_TARGET_PID_PREFIX)) {
+    throw new PassDeckError(
+      'AUTO_TYPE_TARGET',
+      'Не удалось определить активное приложение macOS.',
+    );
+  }
+
+  const targetPid = Number(result.slice(AUTO_TYPE_MAC_TARGET_PID_PREFIX.length));
+  if (!Number.isInteger(targetPid) || targetPid <= 0) {
+    throw new PassDeckError(
+      'AUTO_TYPE_TARGET',
+      'Не удалось определить активное приложение macOS.',
+    );
+  }
+
+  return targetPid;
+}
+
+async function runMacOsAction(
+  targetPid: number,
+  action: AutoTypeAction,
+): Promise<void> {
+  let result: string;
+
+  try {
+    result = await runAutoTypeMacOsScript(
+      buildAutoTypeMacOsScript(targetPid, [action]),
     );
   } catch (error) {
     if (isMacOsPermissionError(error)) {
@@ -156,25 +211,27 @@ async function sendActionsToMacOs(actions: AutoTypeAction[]): Promise<void> {
     );
   }
 
-  if (result.includes(AUTO_TYPE_MAC_SELF_TARGET_MARKER)) {
-    throw new PassDeckError(
-      'AUTO_TYPE_TARGET',
-      'Перейдите в окно сайта или приложения и нажмите ⌘+⌥+A ещё раз.',
-    );
-  }
-
-  if (result.includes(AUTO_TYPE_MAC_NO_TARGET_MARKER)) {
-    throw new PassDeckError(
-      'AUTO_TYPE_TARGET',
-      'Не удалось определить активное приложение macOS.',
-    );
-  }
-
   if (!result.includes(AUTO_TYPE_MAC_SUCCESS_MARKER)) {
     throw new PassDeckError(
       'AUTO_TYPE_FAILED',
       'macOS Auto-Type завершился без подтверждения успешного ввода.',
     );
+  }
+}
+
+async function sendActionsToMacOs(actions: AutoTypeAction[]): Promise<void> {
+  const targetPid = await readMacOsTargetPid();
+  const previousClipboardText = clipboard.readText();
+
+  try {
+    for (const action of actions) {
+      if (action.kind === 'text') {
+        clipboard.writeText(action.value);
+      }
+      await runMacOsAction(targetPid, action);
+    }
+  } finally {
+    clipboard.writeText(previousClipboardText);
   }
 }
 

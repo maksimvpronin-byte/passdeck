@@ -345,6 +345,19 @@ export function App() {
     setRevealed(null);
   }
 
+  async function forceReadWriteActive(): Promise<void> {
+    if (!active || !active.readOnly) {
+      return;
+    }
+    const result = await window.passdeck.database.forceReadWrite(active.sessionId);
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+    updateSession(result.data);
+    setToast('База открыта на запись');
+  }
+
   async function closeSession(sessionId: string): Promise<void> {
     const result = await window.passdeck.database.close(sessionId);
     if (!result.ok) {
@@ -1148,6 +1161,24 @@ export function App() {
           </aside>
 
           <section className="entry-list panel">
+            {active.readOnly ? (
+              <div className="readonly-banner">
+                <div>
+                  <strong>База открыта только для чтения</strong>
+                  <span>
+                    Найден lock-файл PassDeck. Если база не открыта в другом окне, можно открыть
+                    её на запись.
+                  </span>
+                </div>
+                <button
+                  className="button button--secondary"
+                  type="button"
+                  onClick={() => void forceReadWriteActive()}
+                >
+                  Открыть на запись
+                </button>
+              </div>
+            ) : null}
             <div className="entry-toolbar">
               <label className="search-box">
                 <span>⌕</span>

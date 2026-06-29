@@ -7,19 +7,19 @@ export const AUTO_TYPE_MAC_TARGET_CHANGED_MARKER =
   '__PASSDECK_TARGET_CHANGED__';
 export const AUTO_TYPE_MAC_SELF_TARGET_MARKER = '__PASSDECK_SELF_TARGET__';
 export const AUTO_TYPE_MAC_NO_TARGET_MARKER = '__PASSDECK_NO_TARGET__';
+export const AUTO_TYPE_MAC_TARGET_PID_PREFIX = '__PASSDECK_TARGET_PID__:';
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const SCRIPT_TIMEOUT_MS = 15_000;
-
-function encodedText(value: string): string {
-  return JSON.stringify(Buffer.from(value, 'utf8').toString('base64'));
-}
+const SYSTEM_EVENTS_APPLICATION =
+  "Application('/System/Library/CoreServices/System Events.app')";
 
 function actionScript(action: AutoTypeAction): string {
   if (action.kind === 'text') {
     return [
       'assertTarget();',
-      `systemEvents.keystroke(decodeBase64(${encodedText(action.value)}));`,
+      "systemEvents.keystroke('v', { using: 'command down' });",
+      'delay(0.08);',
     ].join('\n');
   }
 
@@ -34,8 +34,42 @@ function actionScript(action: AutoTypeAction): string {
   return ['assertTarget();', `systemEvents.keyCode(${keyCode});`].join('\n');
 }
 
-export function buildAutoTypeMacOsScript(
+export function buildAutoTypeMacOsTargetScript(
   passDeckProcessId: number,
+): string {
+  return String.raw`
+const systemEvents = ${SYSTEM_EVENTS_APPLICATION};
+
+function frontmostPid() {
+  const processes = systemEvents.applicationProcesses.whose({
+    frontmost: true,
+  })();
+
+  if (!processes || processes.length === 0) {
+    return 0;
+  }
+
+  return Number(processes[0].unixId());
+}
+
+function run() {
+  const targetPid = frontmostPid();
+
+  if (!targetPid) {
+    return '${AUTO_TYPE_MAC_NO_TARGET_MARKER}';
+  }
+
+  if (targetPid === ${passDeckProcessId}) {
+    return '${AUTO_TYPE_MAC_SELF_TARGET_MARKER}';
+  }
+
+  return '${AUTO_TYPE_MAC_TARGET_PID_PREFIX}' + targetPid;
+}
+`;
+}
+
+export function buildAutoTypeMacOsScript(
+  targetProcessId: number,
   actions: AutoTypeAction[],
 ): string {
   const actionLines = actions
@@ -43,19 +77,8 @@ export function buildAutoTypeMacOsScript(
     .join('\ndelay(0.04);\n');
 
   return String.raw`
-ObjC.import('Foundation');
-
-const systemEvents = Application('System Events');
-let targetPid = 0;
-
-function decodeBase64(value) {
-  const data = $.NSData.alloc.initWithBase64EncodedStringOptions(value, 0);
-  const text = $.NSString.alloc.initWithDataEncoding(
-    data,
-    $.NSUTF8StringEncoding,
-  );
-  return ObjC.unwrap(text);
-}
+const systemEvents = ${SYSTEM_EVENTS_APPLICATION};
+const targetPid = ${targetProcessId};
 
 function frontmostPid() {
   const processes = systemEvents.applicationProcesses.whose({
@@ -76,22 +99,6 @@ function assertTarget() {
 }
 
 function run() {
-  targetPid = frontmostPid();
-
-  if (!targetPid) {
-    return '${AUTO_TYPE_MAC_NO_TARGET_MARKER}';
-  }
-
-  if (targetPid === ${passDeckProcessId}) {
-    return '${AUTO_TYPE_MAC_SELF_TARGET_MARKER}';
-  }
-
-  delay(0.08);
-
-  if (frontmostPid() !== targetPid) {
-    return '${AUTO_TYPE_MAC_TARGET_CHANGED_MARKER}';
-  }
-
   try {
 ${actionLines
   .split('\n')

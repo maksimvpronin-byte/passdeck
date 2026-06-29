@@ -637,6 +637,18 @@ export class DatabaseService {
     await this.persistOpenTabs();
   }
 
+  async forceReadWrite(sessionId: string): Promise<DatabaseView> {
+    const session = this.getUnlockedSession(sessionId);
+    if (!session.readOnly) {
+      return this.toView(session);
+    }
+
+    const lockState = await this.acquireLock(session.path, true);
+    session.readOnly = false;
+    session.ownsLock = lockState.ownsLock;
+    return this.toView(session);
+  }
+
   async shutdown(): Promise<void> {
     await this.saveAllDirty();
     await this.persistOpenTabs();

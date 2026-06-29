@@ -134,6 +134,13 @@ export function registerIpc(
       return toApiError(error);
     }
   });
+  ipcMain.handle('database:force-read-write', async (_event, sessionId: string) => {
+    try {
+      return { ok: true, data: await databases.forceReadWrite(sessionId) };
+    } catch (error) {
+      return toApiError(error);
+    }
+  });
   ipcMain.handle('database:reveal-password', (_event, sessionId: string, entryId: string) => {
     try {
       return { ok: true, data: databases.revealPassword(sessionId, entryId) };

@@ -27,6 +27,8 @@ const api: PassDeckApi & TouchIdApi = {
     lock: (sessionId) => ipcRenderer.invoke('database:lock', sessionId),
     unlock: (sessionId, password) => ipcRenderer.invoke('database:unlock', sessionId, password),
     close: (sessionId) => ipcRenderer.invoke('database:close', sessionId),
+    forceReadWrite: (sessionId) =>
+      ipcRenderer.invoke('database:force-read-write', sessionId),
     revealPassword: (sessionId, entryId) =>
       ipcRenderer.invoke('database:reveal-password', sessionId, entryId),
     revealCustomField: (sessionId, entryId, key) =>

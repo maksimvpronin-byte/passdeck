@@ -18,7 +18,7 @@ async function createHarness() {
     rememberDatabase: () => Promise.resolve(),
     setLastOpenDatabases: () => Promise.resolve(),
   } as unknown as SettingsStore;
-  return { root, backupDir, service: new DatabaseService(settings) };
+  return { root, backupDir, settings, service: new DatabaseService(settings) };
 }
 
 afterEach(async () => {
@@ -84,6 +84,51 @@ describe('DatabaseService', () => {
     expect(reopened.entries[0]?.favorite).toBe(true);
     expect(reopened.entries[0]?.autoTypeSequence).toBe('{USERNAME}{TAB}{PASSWORD}');
     await second.service.closeDatabase(reopened.sessionId);
+  }, 30_000);
+
+  it('can force a read-only database back to writable when its lock is stale', async () => {
+    const { root, service, settings } = await createHarness();
+    const filePath = path.join(root, 'Readonly.kdbx');
+    const password = 'PassDeck-Readonly-2026!';
+    const created = await service.createDatabase({ path: filePath, password, name: 'Readonly' });
+    await service.saveDatabase(created.sessionId);
+
+    const secondService = new DatabaseService(settings);
+    const readOnly = await secondService.openDatabase({ path: filePath, password });
+    expect(readOnly.readOnly).toBe(true);
+    expect(() =>
+      secondService.saveEntry({
+        sessionId: readOnly.sessionId,
+        groupId: readOnly.groups[0]!.id,
+        title: 'Blocked',
+        username: '',
+        password: '',
+        url: '',
+        notes: '',
+        tags: [],
+        favorite: false,
+        expires: false,
+      }),
+    ).toThrow('только для чтения');
+
+    const writable = await secondService.forceReadWrite(readOnly.sessionId);
+    expect(writable.readOnly).toBe(false);
+    const changed = secondService.saveEntry({
+      sessionId: writable.sessionId,
+      groupId: writable.groups[0]!.id,
+      title: 'Writable again',
+      username: '',
+      password: '',
+      url: '',
+      notes: '',
+      tags: [],
+      favorite: false,
+      expires: false,
+    });
+    expect(changed.entries[0]?.title).toBe('Writable again');
+
+    await secondService.closeDatabase(writable.sessionId);
+    await service.closeDatabase(created.sessionId);
   }, 30_000);
 
   it('stores, masks, reveals and preserves protected custom fields', async () => {

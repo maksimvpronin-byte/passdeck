@@ -167,6 +167,7 @@ export interface PassDeckApi {
     lock(sessionId: string): Promise<ApiResult<DatabaseView>>;
     unlock(sessionId: string, password: string): Promise<ApiResult<DatabaseView>>;
     close(sessionId: string): Promise<ApiResult<null>>;
+    forceReadWrite(sessionId: string): Promise<ApiResult<DatabaseView>>;
     revealPassword(sessionId: string, entryId: string): Promise<ApiResult<string>>;
     revealCustomField(sessionId: string, entryId: string, key: string): Promise<ApiResult<string>>;
     addAttachments(sessionId: string, entryId: string): Promise<ApiResult<DatabaseView>>;

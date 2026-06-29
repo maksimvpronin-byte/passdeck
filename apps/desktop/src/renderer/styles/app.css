@@ -344,6 +344,34 @@ button:disabled {
   display: flex;
   flex-direction: column;
 }
+.readonly-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border-soft));
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+}
+.readonly-banner div {
+  min-width: 0;
+}
+.readonly-banner strong,
+.readonly-banner span {
+  display: block;
+}
+.readonly-banner strong {
+  font-size: 12px;
+}
+.readonly-banner span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.readonly-banner .button {
+  flex: 0 0 auto;
+}
 .entry-toolbar {
   display: flex;
   gap: 10px;

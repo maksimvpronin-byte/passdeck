@@ -379,10 +379,17 @@ export class DatabaseService {
     if (!target || this.isRecycleBin(session.db, target)) {
       throw new PassDeckError('GROUP_NOT_FOUND', 'Группа назначения не найдена.');
     }
-    if (entry.parentGroup?.uuid.toString() === target.uuid.toString()) {
+    if (
+      entry.parentGroup?.uuid.toString() === target.uuid.toString() &&
+      request.beforeEntryId === undefined
+    ) {
       return this.toView(session);
     }
-    session.db.move(entry, target);
+    if (entry.parentGroup?.uuid.toString() !== target.uuid.toString()) {
+      session.db.move(entry, target);
+    }
+    this.placeEntryBefore(target, entry, request.beforeEntryId ?? null);
+    entry.times.update();
     session.dirty = true;
     return this.toView(session);
   }
@@ -426,6 +433,24 @@ export class DatabaseService {
 
     session.db.move(group, target);
     group.times.update();
+    session.dirty = true;
+    return this.toView(session);
+  }
+
+  deleteGroup(sessionId: string, groupId: string): DatabaseView {
+    const session = this.getWritableSession(sessionId);
+    const group = this.findGroup(session.db, groupId);
+
+    if (!group || this.isRecycleBin(session.db, group)) {
+      throw new PassDeckError('GROUP_NOT_FOUND', 'Группа не найдена.');
+    }
+
+    const root = session.db.getDefaultGroup();
+    if (group.uuid.toString() === root.uuid.toString()) {
+      throw new PassDeckError('GROUP_DELETE_ROOT', 'Корневую группу удалять нельзя.');
+    }
+
+    session.db.move(group, undefined);
     session.dirty = true;
     return this.toView(session);
   }
@@ -848,6 +873,45 @@ export class DatabaseService {
       }
     }
     return undefined;
+  }
+
+  private placeEntryBefore(
+    group: KdbxGroup,
+    entry: KdbxEntry,
+    beforeEntryId: string | null,
+  ): void {
+    if (beforeEntryId === entry.uuid.toString()) {
+      return;
+    }
+
+    const currentIndex = group.entries.findIndex(
+      (item) => item.uuid.toString() === entry.uuid.toString(),
+    );
+    if (currentIndex === -1) {
+      return;
+    }
+
+    const beforeIndex = beforeEntryId
+      ? group.entries.findIndex((item) => item.uuid.toString() === beforeEntryId)
+      : -1;
+    if (beforeEntryId && beforeIndex === -1) {
+      throw new PassDeckError(
+        'ENTRY_ORDER_TARGET',
+        'Целевая позиция записи не найдена в выбранной группе.',
+      );
+    }
+
+    const [movedEntry] = group.entries.splice(currentIndex, 1);
+    if (!movedEntry) {
+      return;
+    }
+
+    if (!beforeEntryId || beforeEntryId === movedEntry.uuid.toString()) {
+      group.entries.push(movedEntry);
+      return;
+    }
+
+    group.entries.splice(beforeIndex > currentIndex ? beforeIndex - 1 : beforeIndex, 0, movedEntry);
   }
 
   private lockPath(filePath: string): string {

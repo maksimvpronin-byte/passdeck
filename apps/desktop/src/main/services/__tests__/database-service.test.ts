@@ -346,6 +346,88 @@ describe('DatabaseService', () => {
     await third.service.closeDatabase(afterDelete.sessionId);
   }, 30_000);
 
+  it('manually reorders entries and keeps the order after reopening', async () => {
+    const { root, service } = await createHarness();
+    const filePath = path.join(root, 'EntryOrder.kdbx');
+    const password = 'PassDeck-Entry-Order-2026!';
+    const created = await service.createDatabase({ path: filePath, password, name: 'Entry order' });
+    const groupId = created.groups[0]!.id;
+
+    const first = service.saveEntry({
+      sessionId: created.sessionId,
+      groupId,
+      title: 'First',
+      username: '',
+      password: '',
+      url: '',
+      notes: '',
+      tags: [],
+      favorite: false,
+      expires: false,
+    }).entries.find((entry) => entry.title === 'First')!;
+    const second = service.saveEntry({
+      sessionId: created.sessionId,
+      groupId,
+      title: 'Second',
+      username: '',
+      password: '',
+      url: '',
+      notes: '',
+      tags: [],
+      favorite: false,
+      expires: false,
+    }).entries.find((entry) => entry.title === 'Second')!;
+    const third = service.saveEntry({
+      sessionId: created.sessionId,
+      groupId,
+      title: 'Third',
+      username: '',
+      password: '',
+      url: '',
+      notes: '',
+      tags: [],
+      favorite: false,
+      expires: false,
+    }).entries.find((entry) => entry.title === 'Third')!;
+
+    const reordered = service.moveEntry({
+      sessionId: created.sessionId,
+      entryId: third.id,
+      targetGroupId: groupId,
+      beforeEntryId: first.id,
+    });
+    expect(reordered.entries.map((entry) => entry.title)).toEqual(['Third', 'First', 'Second']);
+
+    service.moveEntry({
+      sessionId: created.sessionId,
+      entryId: first.id,
+      targetGroupId: groupId,
+      beforeEntryId: null,
+    });
+    expect(service.getView(created.sessionId).entries.map((entry) => entry.title)).toEqual([
+      'Third',
+      'Second',
+      'First',
+    ]);
+
+    expect(() =>
+      service.moveEntry({
+        sessionId: created.sessionId,
+        entryId: second.id,
+        targetGroupId: groupId,
+        beforeEntryId: 'missing-entry',
+      }),
+    ).toThrow('Целевая позиция');
+
+    await service.saveDatabase(created.sessionId);
+    await service.closeDatabase(created.sessionId);
+
+    const secondHarness = await createHarness();
+    const reopened = await secondHarness.service.openDatabase({ path: filePath, password });
+    expect(reopened.entries.map((entry) => entry.title)).toEqual(['Third', 'Second', 'First']);
+    await secondHarness.service.closeDatabase(reopened.sessionId);
+  }, 30_000);
+
   it('moves a group with all descendants and rejects invalid targets', async () => {
     const { root, service } = await createHarness();
     const filePath = path.join(root, 'GroupMoves.kdbx');
@@ -419,6 +501,58 @@ describe('DatabaseService', () => {
     expect(reopenedWork.parentId).toBe(reopenedArchive.id);
     expect(reopenedChild.parentId).toBe(reopenedWork.id);
 
+    await second.service.closeDatabase(reopened.sessionId);
+  }, 30_000);
+
+  it('deletes a group with descendants and rejects deleting the root group', async () => {
+    const { root, service } = await createHarness();
+    const filePath = path.join(root, 'GroupDelete.kdbx');
+    const password = 'PassDeck-Group-Delete-2026!';
+    const created = await service.createDatabase({
+      path: filePath,
+      password,
+      name: 'Group delete',
+    });
+    const rootGroupId = created.groups[0]!.id;
+    const withWork = service.createGroup({
+      sessionId: created.sessionId,
+      parentId: rootGroupId,
+      name: 'Work',
+    });
+    const workGroupId = withWork.groups.find((group) => group.name === 'Work')!.id;
+    const withChild = service.createGroup({
+      sessionId: created.sessionId,
+      parentId: workGroupId,
+      name: 'Child',
+    });
+    const childGroupId = withChild.groups.find((group) => group.name === 'Child')!.id;
+    service.saveEntry({
+      sessionId: created.sessionId,
+      groupId: childGroupId,
+      title: 'Nested entry',
+      username: '',
+      password: '',
+      url: '',
+      notes: '',
+      tags: [],
+      favorite: false,
+      expires: false,
+    });
+
+    expect(() => service.deleteGroup(created.sessionId, rootGroupId)).toThrow('Корневую группу');
+    const deleted = service.deleteGroup(created.sessionId, workGroupId);
+    expect(deleted.groups.some((group) => group.id === workGroupId)).toBe(false);
+    expect(deleted.groups.some((group) => group.id === childGroupId)).toBe(false);
+    expect(deleted.entries).toHaveLength(0);
+    expect(deleted.groups.some((group) => group.name === 'Recycle Bin')).toBe(false);
+
+    await service.saveDatabase(created.sessionId);
+    await service.closeDatabase(created.sessionId);
+
+    const second = await createHarness();
+    const reopened = await second.service.openDatabase({ path: filePath, password });
+    expect(reopened.groups.some((group) => group.name === 'Work')).toBe(false);
+    expect(reopened.entries).toHaveLength(0);
     await second.service.closeDatabase(reopened.sessionId);
   }, 30_000);
 

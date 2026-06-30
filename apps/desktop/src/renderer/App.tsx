@@ -5,6 +5,7 @@ import type {
   CustomFieldInput,
   DatabaseView,
   EntrySummary,
+  GroupSummary,
   SaveEntryRequest,
 } from '@passdeck/shared';
 import { Logo } from './components/Logo';
@@ -116,8 +117,10 @@ export function App() {
 
   const [draggingGroupId, setDraggingGroupId] = useState<string | null>(null);
   const [dropTargetGroupId, setDropTargetGroupId] = useState<string | null>(null);
+  const [dropTargetEntryId, setDropTargetEntryId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<EntrySummary | null>(null);
+  const [confirmGroupDelete, setConfirmGroupDelete] = useState<GroupSummary | null>(null);
   const [confirmAttachmentDelete, setConfirmAttachmentDelete] = useState<{
     entry: EntrySummary;
     name: string;
@@ -131,6 +134,7 @@ export function App() {
 
   const active = sessions.find((session) => session.sessionId === activeId) ?? sessions[0] ?? null;
   const selectedEntry = active?.entries.find((entry) => entry.id === selectedEntryId) ?? null;
+  const selectedGroup = active?.groups.find((group) => group.id === selectedGroupId) ?? null;
 
   const updateSession = useCallback((view: DatabaseView) => {
     setSessions((current) => {
@@ -574,6 +578,7 @@ export function App() {
     setDraggingEntryId(entry.id);
     setDraggingGroupId(null);
     setDropTargetGroupId(null);
+    setDropTargetEntryId(null);
   }
 
   function canMoveGroup(groupId: string, targetGroupId: string): boolean {
@@ -627,6 +632,7 @@ export function App() {
     setDraggingGroupId(group.id);
     setDraggingEntryId(null);
     setDropTargetGroupId(null);
+    setDropTargetEntryId(null);
   }
 
   function allowGroupDrop(event: React.DragEvent, targetGroupId: string): void {
@@ -658,12 +664,13 @@ export function App() {
       return;
     }
     const entry = active.entries.find((item) => item.id === draggingEntryId);
-    if (!entry || entry.groupId === groupId) {
+    if (!entry) {
       return;
     }
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
     setDropTargetGroupId(groupId);
+    setDropTargetEntryId(null);
   }
 
   async function dropEntry(event: React.DragEvent, targetGroupId: string): Promise<void> {
@@ -677,6 +684,7 @@ export function App() {
       draggingEntryId;
     setDraggingEntryId(null);
     setDropTargetGroupId(null);
+    setDropTargetEntryId(null);
     if (!entryId) {
       return;
     }
@@ -688,6 +696,7 @@ export function App() {
       sessionId: active.sessionId,
       entryId,
       targetGroupId,
+      beforeEntryId: null,
     });
     if (!result.ok || !result.data) {
       setError(resultMessage(result));
@@ -697,6 +706,53 @@ export function App() {
     setSelectedGroupId(targetGroupId);
     setSelectedEntryId(entryId);
     setToast('Запись перемещена');
+  }
+
+  function allowEntryOrderDrop(event: React.DragEvent, beforeEntry: EntrySummary): void {
+    if (!active || active.readOnly || !draggingEntryId || draggingEntryId === beforeEntry.id) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setDropTargetGroupId(null);
+    setDropTargetEntryId(beforeEntry.id);
+  }
+
+  async function dropEntryBefore(
+    event: React.DragEvent,
+    beforeEntry: EntrySummary,
+  ): Promise<void> {
+    event.preventDefault();
+    if (!active || active.readOnly) {
+      return;
+    }
+    const entryId =
+      event.dataTransfer.getData('application/x-passdeck-entry-id') ||
+      event.dataTransfer.getData('text/plain') ||
+      draggingEntryId;
+
+    setDraggingEntryId(null);
+    setDropTargetGroupId(null);
+    setDropTargetEntryId(null);
+
+    if (!entryId || entryId === beforeEntry.id) {
+      return;
+    }
+
+    const result = await window.passdeck.database.moveEntry({
+      sessionId: active.sessionId,
+      entryId,
+      targetGroupId: beforeEntry.groupId,
+      beforeEntryId: beforeEntry.id,
+    });
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+    updateSession(result.data);
+    setSelectedGroupId(beforeEntry.groupId);
+    setSelectedEntryId(entryId);
+    setToast('Порядок записей изменён');
   }
 
   async function dropGroup(
@@ -716,6 +772,7 @@ export function App() {
     setDraggingEntryId(null);
     setDraggingGroupId(null);
     setDropTargetGroupId(null);
+    setDropTargetEntryId(null);
 
     if (!groupId || !canMoveGroup(groupId, targetGroupId)) {
       return;
@@ -758,6 +815,7 @@ export function App() {
     setDraggingEntryId(null);
     setDraggingGroupId(null);
     setDropTargetGroupId(null);
+    setDropTargetEntryId(null);
   }
 
   async function deleteEntry(): Promise<void> {
@@ -773,6 +831,25 @@ export function App() {
     setConfirmDelete(null);
     setSelectedEntryId(null);
     setToast('Запись удалена');
+  }
+
+  async function deleteGroup(): Promise<void> {
+    if (!active || !confirmGroupDelete) {
+      return;
+    }
+    const result = await window.passdeck.database.deleteGroup(
+      active.sessionId,
+      confirmGroupDelete.id,
+    );
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+    updateSession(result.data);
+    setConfirmGroupDelete(null);
+    setSelectedGroupId(result.data.selectedGroupId);
+    setSelectedEntryId(null);
+    setToast('Группа удалена');
   }
 
   async function addAttachments(entry: EntrySummary): Promise<void> {
@@ -1101,15 +1178,26 @@ export function App() {
                 <span className="eyebrow">Структура</span>
                 <h2>Группы</h2>
               </div>
-              <button
-                className="icon-button"
-                type="button"
-                onClick={() => setGroupModal(true)}
-                title="Новая группа"
-                disabled={active.readOnly}
-              >
-                +
-              </button>
+              <div className="panel__actions">
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={() => setGroupModal(true)}
+                  title="Новая группа"
+                  disabled={active.readOnly}
+                >
+                  +
+                </button>
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={() => selectedGroup && setConfirmGroupDelete(selectedGroup)}
+                  title="Удалить группу"
+                  disabled={active.readOnly || !selectedGroup || selectedGroup.parentId === null}
+                >
+                  ×
+                </button>
+              </div>
             </div>
             <div className="group-list">
               <button
@@ -1241,11 +1329,19 @@ export function App() {
                     key={entry.id}
                     className={`entry-row ${selectedEntryId === entry.id ? 'entry-row--active' : ''} ${
                       draggingEntryId === entry.id ? 'entry-row--dragging' : ''
-                    }`}
+                    } ${dropTargetEntryId === entry.id ? 'entry-row--drop-target' : ''}`}
                     type="button"
                     draggable={!active.readOnly}
                     onDragStart={(event) => beginEntryDrag(event, entry)}
                     onDragEnd={endEntryDrag}
+                    onDragEnter={(event) => allowEntryOrderDrop(event, entry)}
+                    onDragOver={(event) => allowEntryOrderDrop(event, entry)}
+                    onDragLeave={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                        setDropTargetEntryId((current) => (current === entry.id ? null : current));
+                      }
+                    }}
+                    onDrop={(event) => void dropEntryBefore(event, entry)}
                     onClick={() => {
                       setSelectedEntryId(entry.id);
                       setRevealed(null);
@@ -1889,6 +1985,31 @@ export function App() {
               className="button button--danger"
               type="button"
               onClick={() => void deleteEntry()}
+            >
+              Удалить
+            </button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {confirmGroupDelete ? (
+        <Modal title="Удалить группу?" onClose={() => setConfirmGroupDelete(null)}>
+          <p className="confirm-text">
+            Группа «{confirmGroupDelete.name}» и все вложенные элементы будут перемещены в корзину
+            базы.
+          </p>
+          <div className="form__actions">
+            <button
+              className="button button--ghost"
+              type="button"
+              onClick={() => setConfirmGroupDelete(null)}
+            >
+              Отмена
+            </button>
+            <button
+              className="button button--danger"
+              type="button"
+              onClick={() => void deleteGroup()}
             >
               Удалить
             </button>

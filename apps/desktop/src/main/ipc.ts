@@ -97,6 +97,13 @@ export function registerIpc(
       return toApiError(error);
     }
   });
+  ipcMain.handle('database:delete-group', (_event, sessionId: string, groupId: string) => {
+    try {
+      return { ok: true, data: databases.deleteGroup(sessionId, groupId) };
+    } catch (error) {
+      return toApiError(error);
+    }
+  });
   ipcMain.handle('database:move-entry', (_event, request: MoveEntryRequest) => {
     try {
       return { ok: true, data: databases.moveEntry(request) };

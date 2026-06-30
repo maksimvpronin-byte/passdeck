@@ -121,6 +121,7 @@ export interface MoveEntryRequest {
   sessionId: string;
   entryId: string;
   targetGroupId: string;
+  beforeEntryId?: string | null;
 }
 
 export interface MoveGroupRequest {
@@ -162,6 +163,7 @@ export interface PassDeckApi {
     saveEntry(request: SaveEntryRequest): Promise<ApiResult<DatabaseView>>;
     deleteEntry(sessionId: string, entryId: string): Promise<ApiResult<DatabaseView>>;
     createGroup(request: CreateGroupRequest): Promise<ApiResult<DatabaseView>>;
+    deleteGroup(sessionId: string, groupId: string): Promise<ApiResult<DatabaseView>>;
     moveEntry(request: MoveEntryRequest): Promise<ApiResult<DatabaseView>>;
     moveGroup(request: MoveGroupRequest): Promise<ApiResult<DatabaseView>>;
     lock(sessionId: string): Promise<ApiResult<DatabaseView>>;

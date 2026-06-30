@@ -22,6 +22,8 @@ const api: PassDeckApi & TouchIdApi = {
     deleteEntry: (sessionId, entryId) =>
       ipcRenderer.invoke('database:delete-entry', sessionId, entryId),
     createGroup: (request) => ipcRenderer.invoke('database:create-group', request),
+    deleteGroup: (sessionId, groupId) =>
+      ipcRenderer.invoke('database:delete-group', sessionId, groupId),
     moveEntry: (request) => ipcRenderer.invoke('database:move-entry', request),
     moveGroup: (request) => ipcRenderer.invoke('database:move-group', request),
     lock: (sessionId) => ipcRenderer.invoke('database:lock', sessionId),

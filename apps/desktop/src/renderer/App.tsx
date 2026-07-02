@@ -210,6 +210,9 @@ export function App() {
     };
   }, [settings, sessions, refreshSessions]);
 
+  const lockedActiveSessionId = active?.locked === true ? active.sessionId : null;
+  const lockedActivePath = active?.locked === true ? active.path : null;
+
   function activateSession(session: DatabaseView): void {
     setActiveId(session.sessionId);
     setSelectedEntryId(null);
@@ -222,7 +225,47 @@ export function App() {
     );
   }
 
-   useEffect(() => { /* passdeck-touchid-locked-auto-unlock */ const lockedSession = active?.locked ? active : null; if (!lockedSession) { return; } let cancelled = false; const timer = window.setTimeout(() => { void window.passdeck.touchId.status(lockedSession.path).then((statusResult) => { if (cancelled || !statusResult.ok || !statusResult.data?.enabled) { return null; } return window.passdeck.touchId.unlock(lockedSession.sessionId); }).then((result) => { if (!result || cancelled) { return; } if (!result.ok || !result.data) { const message = result.error?.message ?? ''; if (message && !/cancel|отмен|Touch ID/i.test(message)) { setError(resultMessage(result)); } return; } updateSession(result.data); setUnlockTarget(null); setUnlockPassword(''); setToast('База разблокирована через Touch ID'); }).catch(() => undefined); }, 350); return () => { cancelled = true; window.clearTimeout(timer); }; }, [active?.sessionId, active?.locked, active?.path, updateSession]); const filteredEntries = useMemo(() => {
+  useEffect(() => {
+    if (!lockedActiveSessionId || !lockedActivePath) {
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void window.passdeck.touchId
+        .status(lockedActivePath)
+        .then((statusResult) => {
+          if (cancelled || !statusResult.ok || !statusResult.data?.enabled) {
+            return null;
+          }
+          return window.passdeck.touchId.unlock(lockedActiveSessionId);
+        })
+        .then((result) => {
+          if (!result || cancelled) {
+            return;
+          }
+          if (!result.ok || !result.data) {
+            const message = result.error?.message ?? '';
+            if (message && !/cancel|отмен|Touch ID/i.test(message)) {
+              setError(resultMessage(result));
+            }
+            return;
+          }
+          updateSession(result.data);
+          setUnlockTarget(null);
+          setUnlockPassword('');
+          setToast('База разблокирована через Touch ID');
+        })
+        .catch(() => undefined);
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [lockedActivePath, lockedActiveSessionId, updateSession]);
+
+  const filteredEntries = useMemo(() => {
     if (!active || active.locked) {
       return [];
     }
@@ -260,7 +303,13 @@ export function App() {
 
   async function submitUnlock(event: React.FormEvent): Promise<void> {
     event.preventDefault();
-    if (!unlockTarget) { return; } if (!unlockPassword) { await unlockWithTouchId(); return; }
+    if (!unlockTarget) {
+      return;
+    }
+    if (!unlockPassword) {
+      await unlockWithTouchId();
+      return;
+    }
     const result = unlockTarget.sessionId
       ? await window.passdeck.database.unlock(unlockTarget.sessionId, unlockPassword)
       : await window.passdeck.database.open({
@@ -283,7 +332,35 @@ export function App() {
     setToast('База открыта');
   }
 
-  async function unlockWithTouchId(): Promise<void> {  if (!unlockTarget) { return; }  const result = unlockTarget.sessionId ? await window.passdeck.touchId.unlock(unlockTarget.sessionId) : unlockTarget.path ? await window.passdeck.touchId.open(unlockTarget.path) : null;  if (!result) { return; }  if (!result.ok || !result.data) { setError(resultMessage(result)); return; }  setUnlockPassword('');  updateSession(result.data);  const next = openQueue[0];  if (next) { setOpenQueue(openQueue.slice(1)); setUnlockTarget({ path: next }); } else { setUnlockTarget(null); }  setToast('База открыта через Touch ID'); } async function chooseCreate(): Promise<void> {
+  async function unlockWithTouchId(): Promise<void> {
+    if (!unlockTarget) {
+      return;
+    }
+    const result = unlockTarget.sessionId
+      ? await window.passdeck.touchId.unlock(unlockTarget.sessionId)
+      : unlockTarget.path
+        ? await window.passdeck.touchId.open(unlockTarget.path)
+        : null;
+    if (!result) {
+      return;
+    }
+    if (!result.ok || !result.data) {
+      setError(resultMessage(result));
+      return;
+    }
+    setUnlockPassword('');
+    updateSession(result.data);
+    const next = openQueue[0];
+    if (next) {
+      setOpenQueue(openQueue.slice(1));
+      setUnlockTarget({ path: next });
+    } else {
+      setUnlockTarget(null);
+    }
+    setToast('База открыта через Touch ID');
+  }
+
+  async function chooseCreate(): Promise<void> {
     const target = await window.passdeck.dialog.chooseCreateFile('PassDeck.kdbx');
     if (target) {
       setCreateTarget(target);

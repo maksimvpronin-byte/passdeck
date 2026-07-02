@@ -204,9 +204,9 @@ if (!gotLock) {
     syncTray();
     const shortcutRegistered = autoType.registerShortcut();
     if (
-    (process.platform === 'win32' || process.platform === 'darwin') &&
-    !shortcutRegistered
-  ) {
+      (process.platform === 'win32' || process.platform === 'darwin') &&
+      !shortcutRegistered
+    ) {
       mainWindow.webContents.once('did-finish-load', () => {
         mainWindow?.webContents.send(
           'autotype:error',

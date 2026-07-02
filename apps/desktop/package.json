@@ -1,6 +1,6 @@
 {
   "name": "@passdeck/desktop",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "description": "PassDeck desktop application",
   "license": "MIT",
@@ -23,7 +23,7 @@
     "dist:win": "electron-builder --config electron-builder.yml --win portable --x64 --publish never"
   },
   "dependencies": {
-    "@passdeck/shared": "0.2.2",
+    "@passdeck/shared": "0.2.3",
     "hash-wasm": "4.12.0",
     "kdbxweb": "2.1.1",
     "react": "19.2.7",

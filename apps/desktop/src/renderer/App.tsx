@@ -288,6 +288,19 @@ export function App() {
     });
   }, [active, search, selectedGroupId]);
 
+  const entryCountByGroupId = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (!active || active.locked) {
+      return counts;
+    }
+
+    for (const entry of active.entries) {
+      counts.set(entry.groupId, (counts.get(entry.groupId) ?? 0) + 1);
+    }
+
+    return counts;
+  }, [active]);
+
   async function chooseOpen(): Promise<void> {
     const paths = await window.passdeck.dialog.chooseOpenFiles();
     const first = paths[0];
@@ -1315,7 +1328,7 @@ export function App() {
                 >
                   <span>{group.depth === 0 ? '◇' : '›'}</span>
                   <strong>{group.name}</strong>
-                  <em>{active.entries.filter((entry) => entry.groupId === group.id).length}</em>
+                  <em>{entryCountByGroupId.get(group.id) ?? 0}</em>
                 </button>
               ))}
             </div>

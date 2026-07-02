@@ -1437,6 +1437,24 @@ export function App() {
                   />
                 </div>
 
+                <section className="autotype-help">
+                  <div className="autotype-help-title">Auto-Type</div>
+                  <ol className="autotype-help-steps">
+                    <li>Выберите эту запись в PassDeck.</li>
+                    <li>Перейдите в поле логина сайта или приложения.</li>
+                    <li>
+                      Нажмите Ctrl+Alt+A на Windows или ⌘ Command + ⌥ Option + A на macOS.
+                    </li>
+                  </ol>
+                  <div className="autotype-help-sequence">
+                    PassDeck введёт: логин → Tab → пароль → Enter
+                  </div>
+                  <p className="autotype-help-note">
+                    PassDeck не активирует целевое окно сам. Перед нажатием горячей клавиши фокус
+                    должен быть уже в нужном поле.
+                  </p>
+                </section>
+
                 {selectedEntry.customFields.length > 0 ? (
                   <section className="custom-fields-details">
                     <div className="section-heading">
@@ -1951,6 +1969,18 @@ export function App() {
                 <option value="tray">Сворачивать в трей</option>
               </select>
             </label>
+            <section className="autotype-help">
+              <div className="autotype-help-title">Auto-Type</div>
+              <div className="autotype-help-sequence">
+                Windows: Ctrl+Alt+A
+                <br />
+                macOS: ⌘ Command + ⌥ Option + A
+              </div>
+              <p className="autotype-help-note">
+                Сначала выберите запись в PassDeck, затем перейдите в поле логина сайта или
+                приложения и нажмите сочетание клавиш.
+              </p>
+            </section>
             <div className="security-note">
               <strong>Локальный режим</strong>
               <span>Сеть, телеметрия и журналирование отключены.</span>

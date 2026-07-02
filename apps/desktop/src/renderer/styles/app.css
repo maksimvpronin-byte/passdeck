@@ -571,6 +571,47 @@ button:disabled {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+.autotype-help {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--accent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface-2) 88%, var(--accent-soft));
+}
+.autotype-help-title {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+}
+.autotype-help-steps {
+  margin: 0;
+  padding-left: 18px;
+  color: color-mix(in srgb, var(--text) 88%, var(--muted));
+  font-size: 11px;
+  line-height: 1.45;
+}
+.autotype-help-steps li + li {
+  margin-top: 4px;
+}
+.autotype-help-sequence {
+  padding: 8px 9px;
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--accent-soft);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.autotype-help-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
 .custom-fields-details {
   padding-top: 16px;
   border-top: 1px solid var(--border-soft);

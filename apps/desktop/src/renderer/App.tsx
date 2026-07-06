@@ -8,6 +8,7 @@ import type {
   GroupSummary,
   SaveEntryRequest,
 } from '@passdeck/shared';
+import { EntryDetails } from './components/EntryDetails';
 import { Logo } from './components/Logo';
 import { Modal } from './components/Modal';
 import { filterEntries } from './entry-filter';
@@ -77,16 +78,6 @@ function newCustomField(): EditorCustomField {
 
 function basename(filePath: string): string {
   return filePath.split(/[\\/]/).pop() || filePath;
-}
-
-function formatFileSize(size: number): string {
-  if (size < 1024) {
-    return `${size} Б`;
-  }
-  if (size < 1024 * 1024) {
-    return `${(size / 1024).toFixed(size < 10 * 1024 ? 1 : 0)} КБ`;
-  }
-  return `${(size / (1024 * 1024)).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} МБ`;
 }
 
 function resultMessage(result: { error?: { message: string; details?: string } }): string {
@@ -1447,227 +1438,22 @@ export function App() {
           </section>
 
           <aside className="details panel">
-            {!selectedEntry ? (
-              <div className="details-placeholder">
-                <div>◇</div>
-                <h2>Выберите запись</h2>
-                <p>Здесь появятся логин, URL, заметки и действия с паролем.</p>
-              </div>
-            ) : (
-              <>
-                <div className="details__header">
-                  <div className="entry-avatar entry-avatar--large">
-                    {selectedEntry.title.slice(0, 1).toLocaleUpperCase()}
-                  </div>
-                  <div>
-                    <span className="eyebrow">Запись</span>
-                    <h2>{selectedEntry.title}</h2>
-                  </div>
-                  {selectedEntry.favorite ? (
-                    <span className="favorite favorite--large">★</span>
-                  ) : null}
-                </div>
-
-                <div className="field-stack">
-                  <DetailField
-                    label="Логин"
-                    value={selectedEntry.username || '—'}
-                    onCopy={() => void copyValue(selectedEntry.username, 'username')}
-                  />
-                  <div className="detail-field">
-                    <label>Пароль</label>
-                    <div className="secret-value">
-                      <code>
-                        {revealed?.entryId === selectedEntry.id && revealed.key === 'Password'
-                          ? revealed.value
-                          : '••••••••••••'}
-                      </code>
-                      <button
-                        type="button"
-                        onClick={() => void revealPassword(selectedEntry)}
-                        title="Показать на 10 секунд"
-                      >
-                        ◉
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void copyPassword(selectedEntry)}
-                        title="Копировать пароль"
-                      >
-                        ▣
-                      </button>
-                    </div>
-                  </div>
-                  <DetailField
-                    label="URL"
-                    value={selectedEntry.url || '—'}
-                    onCopy={() => void copyValue(selectedEntry.url, 'url')}
-                    {...(selectedEntry.url
-                      ? {
-                          onOpen: () => {
-                            window.open(selectedEntry.url, '_blank', 'noopener,noreferrer');
-                          },
-                        }
-                      : {})}
-                  />
-                </div>
-
-                <section className="autotype-help">
-                  <div className="autotype-help-title">Auto-Type</div>
-                  <ol className="autotype-help-steps">
-                    <li>Выберите эту запись в PassDeck.</li>
-                    <li>Перейдите в поле логина сайта или приложения.</li>
-                    <li>
-                      Нажмите Ctrl+Alt+A на Windows или ⌘ Command + ⌥ Option + A на macOS.
-                    </li>
-                  </ol>
-                  <div className="autotype-help-sequence">
-                    PassDeck введёт: логин → Tab → пароль → Enter
-                  </div>
-                  <p className="autotype-help-note">
-                    PassDeck не активирует целевое окно сам. Перед нажатием горячей клавиши фокус
-                    должен быть уже в нужном поле.
-                  </p>
-                </section>
-
-                {selectedEntry.customFields.length > 0 ? (
-                  <section className="custom-fields-details">
-                    <div className="section-heading">
-                      <label>Пользовательские поля</label>
-                      <span>{selectedEntry.customFields.length}</span>
-                    </div>
-                    <div className="field-stack field-stack--custom">
-                      {selectedEntry.customFields.map((field) =>
-                        field.protected ? (
-                          <div className="detail-field" key={field.key}>
-                            <label>
-                              {field.key} <span className="protected-badge">Защищено</span>
-                            </label>
-                            <div className="secret-value">
-                              <code>
-                                {revealed?.entryId === selectedEntry.id &&
-                                revealed.key === field.key
-                                  ? revealed.value || '—'
-                                  : field.hasValue
-                                    ? '••••••••••••'
-                                    : '—'}
-                              </code>
-                              <button
-                                type="button"
-                                onClick={() => void revealCustomField(selectedEntry, field.key)}
-                                title="Показать на 10 секунд"
-                              >
-                                ◉
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => void copyCustomField(selectedEntry, field.key)}
-                                title="Копировать значение"
-                              >
-                                ▣
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <DetailField
-                            key={field.key}
-                            label={field.key}
-                            value={field.value || '—'}
-                            onCopy={() => void copyCustomField(selectedEntry, field.key)}
-                          />
-                        ),
-                      )}
-                    </div>
-                  </section>
-                ) : null}
-
-                <section className="attachments-details">
-                  <div className="section-heading section-heading--actions">
-                    <div>
-                      <label>Вложения</label>
-                      <span>{selectedEntry.attachments.length}</span>
-                    </div>
-                    <button
-                      className="button button--ghost button--small"
-                      type="button"
-                      onClick={() => void addAttachments(selectedEntry)}
-                      disabled={active.readOnly}
-                    >
-                      + Добавить
-                    </button>
-                  </div>
-                  {selectedEntry.attachments.length === 0 ? (
-                    <p className="attachments-empty">Вложений нет.</p>
-                  ) : (
-                    <div className="attachments-list">
-                      {selectedEntry.attachments.map((attachment) => (
-                        <div className="attachment-row" key={attachment.name}>
-                          <div className="attachment-row__icon">▧</div>
-                          <div className="attachment-row__main">
-                            <strong title={attachment.name}>{attachment.name}</strong>
-                            <span>{formatFileSize(attachment.size)}</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => void exportAttachment(selectedEntry, attachment.name)}
-                            title="Сохранить вложение"
-                          >
-                            ↓
-                          </button>
-                          <button
-                            className="attachment-row__delete"
-                            type="button"
-                            onClick={() =>
-                              setConfirmAttachmentDelete({
-                                entry: selectedEntry,
-                                name: attachment.name,
-                              })
-                            }
-                            title="Удалить вложение"
-                            disabled={active.readOnly}
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <small className="attachments-limit">До 25 МБ на файл и 100 МБ на запись.</small>
-                </section>
-
-                {selectedEntry.tags.length > 0 ? (
-                  <div className="tag-list">
-                    {selectedEntry.tags.map((tag) => (
-                      <span key={tag}>{tag}</span>
-                    ))}
-                  </div>
-                ) : null}
-
-                <section className="notes">
-                  <label>Заметки</label>
-                  <p>{selectedEntry.notes || 'Заметки отсутствуют.'}</p>
-                </section>
-
-                <div className="details__footer">
-                  <button
-                    className="button button--secondary"
-                    type="button"
-                    onClick={() => beginEdit(selectedEntry)}
-                    disabled={active.readOnly}
-                  >
-                    Редактировать
-                  </button>
-                  <button
-                    className="button button--danger"
-                    type="button"
-                    onClick={() => setConfirmDelete(selectedEntry)}
-                    disabled={active.readOnly}
-                  >
-                    Удалить
-                  </button>
-                </div>
-              </>
-            )}
+            <EntryDetails
+              entry={selectedEntry}
+              readOnly={active.readOnly}
+              revealed={revealed}
+              onCopyUsername={(entry) => void copyValue(entry.username, 'username')}
+              onCopyUrl={(entry) => void copyValue(entry.url, 'url')}
+              onRevealPassword={(entry) => void revealPassword(entry)}
+              onCopyPassword={(entry) => void copyPassword(entry)}
+              onRevealCustomField={(entry, key) => void revealCustomField(entry, key)}
+              onCopyCustomField={(entry, key) => void copyCustomField(entry, key)}
+              onAddAttachments={(entry) => void addAttachments(entry)}
+              onExportAttachment={(entry, name) => void exportAttachment(entry, name)}
+              onDeleteAttachment={(entry, name) => setConfirmAttachmentDelete({ entry, name })}
+              onEdit={(entry) => beginEdit(entry)}
+              onDelete={(entry) => setConfirmDelete(entry)}
+            />
           </aside>
         </main>
       )}
@@ -2161,37 +1947,6 @@ export function App() {
           {toast}
         </div>
       ) : null}
-    </div>
-  );
-}
-
-function DetailField({
-  label,
-  value,
-  onCopy,
-  onOpen,
-}: {
-  label: string;
-  value: string;
-  onCopy?: () => void;
-  onOpen?: () => void;
-}) {
-  return (
-    <div className="detail-field">
-      <label>{label}</label>
-      <div>
-        <span className="truncate">{value}</span>
-        {onOpen ? (
-          <button type="button" onClick={onOpen} title="Открыть">
-            ↗
-          </button>
-        ) : null}
-        {onCopy && value !== '—' ? (
-          <button type="button" onClick={onCopy} title="Копировать">
-            ▣
-          </button>
-        ) : null}
-      </div>
     </div>
   );
 }

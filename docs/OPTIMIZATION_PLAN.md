@@ -69,7 +69,35 @@ npm run build
 
 ## Следующие шаги
 
-### 0.2.10 — Entry editor modal
+### 0.2.10 — Missing database file handling
+
+Цель: исправить ошибку при открытии отсутствующей базы, например:
+
+```text
+ENOENT: no such file or directory, stat '/Users/max/Downloads/Database.kdbx'
+```
+
+Контекст:
+
+- Ошибка видна как системный alert поверх приложения.
+- Вероятный сценарий: база осталась в последних/восстановленных файлах или пользователь пытается открыть путь, которого уже нет.
+- Нужно показать понятное сообщение внутри PassDeck и/или удалить недоступный путь из списка последних/восстанавливаемых баз.
+
+Ограничения:
+
+- Не менять формат базы.
+- Не скрывать реальные ошибки доступа/пароля под общий текст.
+- Для отсутствующего файла использовать отдельный код ошибки вроде `DATABASE_FILE_MISSING` или существующий понятный `ApiResult`.
+- Проверить сценарии `open recent`, `restoreTabs`, ручное открытие и Touch ID open, если путь отсутствует.
+
+Ожидаемый результат:
+
+- Нет системного alert с raw `ENOENT`.
+- Пользователь видит дружелюбное сообщение: файл базы не найден, возможно он был перемещён или удалён.
+- Недоступный путь не продолжает бесконечно всплывать при следующем запуске.
+- Добавлен тест на отсутствующий `.kdbx`, если это можно покрыть на уровне сервиса.
+
+### 0.2.11 — Entry editor modal
 
 Цель: вынести JSX редактора записи из `App.tsx` в `EntryEditorModal`.
 
@@ -85,7 +113,7 @@ npm run build
 - Новый компонент `apps/desktop/src/renderer/components/EntryEditorModal.tsx`.
 - `App.tsx` передаёт editor-state и callbacks через props.
 
-### 0.2.11 — Confirm and error modals
+### 0.2.12 — Confirm and error modals
 
 Цель: вынести повторяющиеся confirmation/error-модалки из `App.tsx`.
 
@@ -101,7 +129,7 @@ npm run build
 - Меньше JSX в нижней части `App.tsx`.
 - Единый небольшой компонент для confirm-сценариев, если это не усложнит props.
 
-### 0.2.12 — Sidebar and entry list
+### 0.2.13 — Sidebar and entry list
 
 Цель: вынести основные панели workspace:
 
@@ -113,7 +141,7 @@ npm run build
 - Drag-and-drop поведение не менять.
 - Сначала переносить JSX и callbacks, не переписывать DnD-логику.
 
-### 0.2.13 — IPC helper
+### 0.2.14 — IPC helper
 
 Цель: снизить повторение `try/catch -> toApiError` в `apps/desktop/src/main/ipc.ts`.
 
@@ -123,7 +151,7 @@ npm run build
 - Не менять shape `ApiResult`.
 - Touch ID, Auto-Type и database IPC проверять особенно внимательно.
 
-### 0.2.14 — Auto-Type contract cleanup
+### 0.2.15 — Auto-Type contract cleanup
 
 Цель: проверить, нужны ли `autoTypeEnabled` и `autoTypeSequence` в renderer/shared-контракте после удаления UI-настроек Auto-Type.
 

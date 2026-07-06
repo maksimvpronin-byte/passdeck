@@ -10,6 +10,7 @@ import type {
 } from '@passdeck/shared';
 import { Logo } from './components/Logo';
 import { Modal } from './components/Modal';
+import { filterEntries } from './entry-filter';
 
 type EditorCustomField = {
   id: string;
@@ -269,23 +270,7 @@ export function App() {
     if (!active || active.locked) {
       return [];
     }
-    const query = search.trim().toLocaleLowerCase();
-    return active.entries.filter((entry) => {
-      const groupMatch = !selectedGroupId || entry.groupId === selectedGroupId;
-      const queryMatch =
-        !query ||
-        [
-          entry.title,
-          entry.username,
-          entry.url,
-          entry.notes,
-          entry.tags.join(' '),
-          ...entry.customFields.map((field) =>
-            field.protected ? field.key : `${field.key} ${field.value}`,
-          ),
-        ].some((value) => value.toLocaleLowerCase().includes(query));
-      return groupMatch && queryMatch;
-    });
+    return filterEntries(active.entries, selectedGroupId, search);
   }, [active, search, selectedGroupId]);
 
   const entryCountByGroupId = useMemo(() => {

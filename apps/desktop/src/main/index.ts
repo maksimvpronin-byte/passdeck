@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell, Tray, Menu } from 'electron';
+import type { Rectangle } from 'electron';
 import path from 'node:path';
 import {
   AUTO_TYPE_SHORTCUT_LABEL,
@@ -16,8 +17,10 @@ let shutdownInProgress = false;
 let settings: SettingsStore;
 let databases: DatabaseService;
 let autoType: AutoTypeService;
+let windowBoundsPersistTimer: NodeJS.Timeout | null = null;
 
 const gotLock = app.requestSingleInstanceLock();
+const WINDOW_BOUNDS_PERSIST_DELAY_MS = 500;
 
 function createWindow(): BrowserWindow {
   const bounds = settings.get().windowBounds;
@@ -51,14 +54,15 @@ function createWindow(): BrowserWindow {
   window.webContents.on('will-navigate', (event) => event.preventDefault());
 
   window.once('ready-to-show', () => window.show());
-  window.on('resize', () => persistWindowBounds(window));
-  window.on('move', () => persistWindowBounds(window));
+  window.on('resize', () => scheduleWindowBoundsPersist(window));
+  window.on('move', () => scheduleWindowBoundsPersist(window));
   window.on('close', (event) => {
     if (isQuitting) {
       return;
     }
     if (settings.get().closeBehavior === 'tray') {
       event.preventDefault();
+      void flushWindowBounds(window);
       window.hide();
       return;
     }
@@ -76,12 +80,40 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
-function persistWindowBounds(window: BrowserWindow): void {
-  if (window.isMinimized() || window.isMaximized()) {
+function readableWindowBounds(window: BrowserWindow): Rectangle | null {
+  if (window.isDestroyed() || window.isMinimized() || window.isMaximized()) {
+    return null;
+  }
+  return window.getBounds();
+}
+
+function scheduleWindowBoundsPersist(window: BrowserWindow): void {
+  const bounds = readableWindowBounds(window);
+  if (!bounds) {
     return;
   }
-  const bounds = window.getBounds();
-  void settings.update({ windowBounds: bounds });
+  if (windowBoundsPersistTimer) {
+    clearTimeout(windowBoundsPersistTimer);
+  }
+  windowBoundsPersistTimer = setTimeout(() => {
+    windowBoundsPersistTimer = null;
+    void settings.update({ windowBounds: bounds });
+  }, WINDOW_BOUNDS_PERSIST_DELAY_MS);
+  windowBoundsPersistTimer.unref();
+}
+
+async function flushWindowBounds(window: BrowserWindow | null): Promise<void> {
+  if (windowBoundsPersistTimer) {
+    clearTimeout(windowBoundsPersistTimer);
+    windowBoundsPersistTimer = null;
+  }
+  if (!window) {
+    return;
+  }
+  const bounds = readableWindowBounds(window);
+  if (bounds) {
+    await settings.update({ windowBounds: bounds });
+  }
 }
 
 function createTray(): void {
@@ -145,6 +177,7 @@ async function gracefulQuit(): Promise<void> {
   }
   shutdownInProgress = true;
   try {
+    await flushWindowBounds(mainWindow);
     await databases.shutdown();
     isQuitting = true;
     app.quit();
@@ -204,9 +237,9 @@ if (!gotLock) {
     syncTray();
     const shortcutRegistered = autoType.registerShortcut();
     if (
-    (process.platform === 'win32' || process.platform === 'darwin') &&
-    !shortcutRegistered
-  ) {
+      (process.platform === 'win32' || process.platform === 'darwin') &&
+      !shortcutRegistered
+    ) {
       mainWindow.webContents.once('did-finish-load', () => {
         mainWindow?.webContents.send(
           'autotype:error',

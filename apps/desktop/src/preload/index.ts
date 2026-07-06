@@ -1,7 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { ApiResult, DatabaseView, PassDeckApi } from '@passdeck/shared';
 type TouchIdStatus = { available: boolean; enabled: boolean; reason?: string };
-type TouchIdApi = { touchId: { status(filePath?: string): Promise<ApiResult<TouchIdStatus>>; storePassword(filePath: string, password: string): Promise<ApiResult<null>>; forget(filePath: string): Promise<ApiResult<null>>; open(filePath: string): Promise<ApiResult<DatabaseView>>; unlock(sessionId: string): Promise<ApiResult<DatabaseView>>; }; };
+type TouchIdApi = {
+  touchId: {
+    status(filePath?: string): Promise<ApiResult<TouchIdStatus>>;
+    storePassword(filePath: string, password: string): Promise<ApiResult<null>>;
+    forget(filePath: string): Promise<ApiResult<null>>;
+    open(filePath: string): Promise<ApiResult<DatabaseView>>;
+    unlock(sessionId: string): Promise<ApiResult<DatabaseView>>;
+  };
+};
 
 const api: PassDeckApi & TouchIdApi = {
   settings: {
@@ -54,7 +62,15 @@ const api: PassDeckApi & TouchIdApi = {
   },
   clipboard: {
     copy: (request) => ipcRenderer.invoke('clipboard:copy', request),
-  }, touchId: { status: (filePath) => ipcRenderer.invoke('touchid:status', filePath), storePassword: (filePath, password) => ipcRenderer.invoke('touchid:store-password', filePath, password), forget: (filePath) => ipcRenderer.invoke('touchid:forget', filePath), open: (filePath) => ipcRenderer.invoke('touchid:open', filePath), unlock: (sessionId) => ipcRenderer.invoke('touchid:unlock', sessionId), },
+  },
+  touchId: {
+    status: (filePath) => ipcRenderer.invoke('touchid:status', filePath),
+    storePassword: (filePath, password) =>
+      ipcRenderer.invoke('touchid:store-password', filePath, password),
+    forget: (filePath) => ipcRenderer.invoke('touchid:forget', filePath),
+    open: (filePath) => ipcRenderer.invoke('touchid:open', filePath),
+    unlock: (sessionId) => ipcRenderer.invoke('touchid:unlock', sessionId),
+  },
   app: {
     quit: () => ipcRenderer.invoke('app:quit'),
     lockAll: () => ipcRenderer.invoke('app:lock-all'),

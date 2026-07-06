@@ -8,10 +8,12 @@ import type {
   GroupSummary,
   SaveEntryRequest,
 } from '@passdeck/shared';
+import { CreateDatabaseModal } from './components/CreateDatabaseModal';
 import { EntryDetails } from './components/EntryDetails';
 import { Logo } from './components/Logo';
 import { Modal } from './components/Modal';
 import { SettingsModal } from './components/SettingsModal';
+import { UnlockDatabaseModal } from './components/UnlockDatabaseModal';
 import { filterEntries } from './entry-filter';
 
 type EditorCustomField = {
@@ -1460,95 +1462,31 @@ export function App() {
       )}
 
       {unlockTarget ? (
-        <Modal
-          title="Разблокировка базы"
-          onClose={() => {
+        <UnlockDatabaseModal
+          databaseName={unlockTarget.path ? basename(unlockTarget.path) : (active?.name ?? '')}
+          password={unlockPassword}
+          onPasswordChange={setUnlockPassword}
+          onSubmit={(event) => void submitUnlock(event)}
+          onCancel={() => {
             setUnlockTarget(null);
             setOpenQueue([]);
             setUnlockPassword('');
           }}
-        >
-          <form className="form" onSubmit={(event) => void submitUnlock(event)}>
-            <div className="file-chip">
-              {unlockTarget.path ? basename(unlockTarget.path) : active?.name}
-            </div>
-            <label>
-              <span>Мастер-пароль</span>
-              <input
-                type="password"
-                value={unlockPassword}
-                onChange={(event) => setUnlockPassword(event.target.value)}
-                autoFocus
-                autoComplete="current-password"
-                placeholder="Введите мастер-пароль"
-              />
-            </label>
-            <div className="form__actions">
-              <button
-                className="button button--ghost"
-                type="button"
-                onClick={() => {
-                  setUnlockTarget(null);
-                  setOpenQueue([]);
-                }}
-              >
-                Отмена
-              </button>
-              <button className="button button--primary" type="submit" disabled={!unlockPassword}>
-                Открыть
-              </button>
-            </div>
-          </form>
-        </Modal>
+        />
       ) : null}
 
       {createTarget ? (
-        <Modal title="Новая база KDBX" onClose={() => setCreateTarget(null)}>
-          <form className="form" onSubmit={(event) => void submitCreate(event)}>
-            <div className="file-chip">{createTarget}</div>
-            <label>
-              <span>Название базы</span>
-              <input
-                value={createName}
-                onChange={(event) => setCreateName(event.target.value)}
-                autoFocus
-              />
-            </label>
-            <label>
-              <span>Мастер-пароль</span>
-              <input
-                type="password"
-                value={createPassword}
-                onChange={(event) => setCreatePassword(event.target.value)}
-                autoComplete="new-password"
-              />
-            </label>
-            <label>
-              <span>Повторите пароль</span>
-              <input
-                type="password"
-                value={createConfirm}
-                onChange={(event) => setCreateConfirm(event.target.value)}
-                autoComplete="new-password"
-              />
-            </label>
-            <p className="form__hint">
-              Минимум 8 символов. Восстановить забытый мастер-пароль невозможно.
-            </p>
-            <div className="form__actions">
-              <button
-                className="button button--ghost"
-                type="button"
-                onClick={() => setCreateTarget(null)}
-              >
-                Отмена
-              </button>
-              <button className="button button--primary" type="submit">
-                Создать
-              </button>
-            </div>
-          </form>
-        </Modal>
+        <CreateDatabaseModal
+          targetPath={createTarget}
+          name={createName}
+          password={createPassword}
+          confirmPassword={createConfirm}
+          onNameChange={setCreateName}
+          onPasswordChange={setCreatePassword}
+          onConfirmPasswordChange={setCreateConfirm}
+          onSubmit={(event) => void submitCreate(event)}
+          onCancel={() => setCreateTarget(null)}
+        />
       ) : null}
 
       {editor && active ? (

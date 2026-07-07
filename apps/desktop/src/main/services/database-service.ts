@@ -11,8 +11,8 @@ import {
   unlink,
   writeFile,
 } from 'node:fs/promises';
-import { Consts, Kdbx, KdbxBinaries, KdbxCredentials, ProtectedValue } from 'kdbxweb';
-import type { KdbxBinary, KdbxBinaryWithHash, KdbxEntry, KdbxGroup } from 'kdbxweb';
+import { KdbxBinaries, ProtectedValue } from 'kdbxweb';
+import type { Kdbx, KdbxBinary, KdbxBinaryWithHash, KdbxEntry, KdbxGroup } from 'kdbxweb';
 import { DEFAULT_AUTO_TYPE_SEQUENCE } from '@passdeck/shared';
 import type {
   CreateDatabaseRequest,
@@ -26,13 +26,13 @@ import type {
   OpenDatabaseRequest,
   SaveEntryRequest,
 } from '@passdeck/shared';
-import { configureArgon2 } from './argon2';
 import {
   DatabaseSessionStore,
   type DatabaseSession,
   type FileFingerprint,
 } from './database-session-store';
 import { PassDeckError } from './errors';
+import { KdbxOperations } from './kdbx-operations';
 import { LockFileService } from './lock-file-service';
 import type { SettingsStore } from './settings-store';
 
@@ -83,10 +83,9 @@ function attachmentSize(binary: KdbxBinary | KdbxBinaryWithHash): number {
 export class DatabaseService {
   private readonly sessions = new DatabaseSessionStore();
   private readonly locks = new LockFileService();
+  private readonly kdbx = new KdbxOperations();
 
-  constructor(private readonly settings: SettingsStore) {
-    configureArgon2();
-  }
+  constructor(private readonly settings: SettingsStore) {}
 
   listViews(): DatabaseView[] {
     return this.sessions.list().map((session) => this.toView(session));
@@ -134,7 +133,7 @@ export class DatabaseService {
     await this.ensureDatabaseFileExists(absolutePath);
     const lockState = await this.locks.acquire(absolutePath, request.forceReadWrite === true);
     try {
-      const db = await this.loadKdbx(absolutePath, request.password);
+      const db = await this.kdbx.load(absolutePath, request.password);
       const fingerprint = await this.getFingerprint(absolutePath);
       const session: DatabaseSession = {
         id: randomUUID(),
@@ -182,15 +181,7 @@ export class DatabaseService {
     }
 
     await mkdir(path.dirname(absolutePath), { recursive: true });
-    const credentials = new KdbxCredentials(ProtectedValue.fromString(request.password));
-    await credentials.ready;
-    const db = Kdbx.create(credentials, request.name || 'PassDeck');
-    db.setVersion(4);
-    db.header.versionMinor = 1;
-    db.setKdf(Consts.KdfId.Argon2id);
-    db.meta.generator = 'PassDeck 0.2.0';
-    db.meta.historyMaxItems = 10;
-    db.createRecycleBin();
+    const db = await this.kdbx.create(request.name || 'PassDeck', request.password);
 
     const lockState = await this.locks.acquire(absolutePath, true);
     const session: DatabaseSession = {
@@ -246,7 +237,7 @@ export class DatabaseService {
       await this.createBackup(session.path);
     }
 
-    const data = Buffer.from(await session.db.save());
+    const data = await this.kdbx.save(session.db);
     const tempPath = path.join(
       path.dirname(session.path),
       `.${path.basename(session.path)}.${process.pid}.${Date.now()}.tmp`,
@@ -480,7 +471,7 @@ export class DatabaseService {
       session.ownsLock = lockState.ownsLock;
     }
     try {
-      session.db = await this.loadKdbx(session.path, password);
+      session.db = await this.kdbx.load(session.path, password);
     } catch (error) {
       if (session.ownsLock) {
         await this.locks.release(session);
@@ -724,13 +715,6 @@ export class DatabaseService {
 
       return { key, value, protected: field.protected };
     });
-  }
-
-  private async loadKdbx(filePath: string, password: string): Promise<Kdbx> {
-    const raw = await readFile(filePath);
-    const credentials = new KdbxCredentials(ProtectedValue.fromString(password));
-    await credentials.ready;
-    return Kdbx.load(bufferToArrayBuffer(raw), credentials, { preserveXml: true });
   }
 
   private toView(session: DatabaseSession): DatabaseView {

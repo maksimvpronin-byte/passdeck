@@ -111,6 +111,7 @@ export class DatabaseService {
         continue;
       }
       if (!(await this.fileExists(absolutePath))) {
+        await this.settings.forgetDatabase(absolutePath);
         continue;
       }
       const id = randomUUID();
@@ -142,6 +143,7 @@ export class DatabaseService {
       return this.toView(existing);
     }
 
+    await this.ensureDatabaseFileExists(absolutePath);
     const lockState = await this.acquireLock(absolutePath, request.forceReadWrite === true);
     try {
       const db = await this.loadKdbx(absolutePath, request.password);
@@ -331,11 +333,11 @@ export class DatabaseService {
       lastModified: new Date(),
     });
     entry.customData.set(AUTO_TYPE_ENABLED_KEY, {
-      value: request.autoTypeEnabled === false ? 'false' : 'true',
+      value: 'true',
       lastModified: new Date(),
     });
     entry.customData.set(AUTO_TYPE_SEQUENCE_KEY, {
-      value: (request.autoTypeSequence?.trim() || DEFAULT_AUTO_TYPE_SEQUENCE).slice(0, 500),
+      value: DEFAULT_AUTO_TYPE_SEQUENCE,
       lastModified: new Date(),
     });
 
@@ -875,11 +877,7 @@ export class DatabaseService {
     return undefined;
   }
 
-  private placeEntryBefore(
-    group: KdbxGroup,
-    entry: KdbxEntry,
-    beforeEntryId: string | null,
-  ): void {
+  private placeEntryBefore(group: KdbxGroup, entry: KdbxEntry, beforeEntryId: string | null): void {
     if (beforeEntryId === entry.uuid.toString()) {
       return;
     }
@@ -985,6 +983,19 @@ export class DatabaseService {
       }
       throw error;
     }
+  }
+
+  private async ensureDatabaseFileExists(filePath: string): Promise<void> {
+    if (await this.fileExists(filePath)) {
+      return;
+    }
+
+    await this.settings.forgetDatabase(filePath);
+    throw new PassDeckError(
+      'DATABASE_FILE_MISSING',
+      'Файл базы не найден. Возможно, он был перемещён или удалён.',
+      filePath,
+    );
   }
 
   private async getFingerprint(filePath: string): Promise<FileFingerprint> {

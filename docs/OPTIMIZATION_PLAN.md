@@ -67,99 +67,36 @@ npm run build
 - Модалки разблокировки и создания базы вынесены в `UnlockDatabaseModal` и `CreateDatabaseModal`.
 - State, валидация, очередь открытия баз и IPC-операции остались в `App.tsx`.
 
-## Следующие шаги
+### 0.2.10
 
-### 0.2.10 — Missing database file handling
+- Для отсутствующего файла базы добавлена ошибка `DATABASE_FILE_MISSING` с понятным сообщением.
+- Недоступный путь удаляется из `recentDatabases` и `lastOpenDatabases`.
+- Renderer обновляет список последних баз и закрывает unlock-диалог для missing file ошибок.
+- Добавлен unit-тест на отсутствующий `.kdbx`.
 
-Цель: исправить ошибку при открытии отсутствующей базы, например:
+### 0.2.11
 
-```text
-ENOENT: no such file or directory, stat '/Users/max/Downloads/Database.kdbx'
-```
+- Редактор записи вынесен в `EntryEditorModal`.
+- `App.tsx` остался владельцем состояния редактора, IPC сохранения и callbacks.
 
-Контекст:
+### 0.2.12
 
-- Ошибка видна как системный alert поверх приложения.
-- Вероятный сценарий: база осталась в последних/восстановленных файлах или пользователь пытается открыть путь, которого уже нет.
-- Нужно показать понятное сообщение внутри PassDeck и/или удалить недоступный путь из списка последних/восстанавливаемых баз.
+- Confirmation/error-модалки вынесены в `ConfirmModal` и `ErrorModal`.
 
-Ограничения:
+### 0.2.13
 
-- Не менять формат базы.
-- Не скрывать реальные ошибки доступа/пароля под общий текст.
-- Для отсутствующего файла использовать отдельный код ошибки вроде `DATABASE_FILE_MISSING` или существующий понятный `ApiResult`.
-- Проверить сценарии `open recent`, `restoreTabs`, ручное открытие и Touch ID open, если путь отсутствует.
+- Основные панели workspace вынесены в `GroupsSidebar` и `EntryList`.
+- Drag-and-drop логика осталась в `App.tsx` и передаётся в панели через callbacks.
 
-Ожидаемый результат:
+### 0.2.14
 
-- Нет системного alert с raw `ENOENT`.
-- Пользователь видит дружелюбное сообщение: файл базы не найден, возможно он был перемещён или удалён.
-- Недоступный путь не продолжает бесконечно всплывать при следующем запуске.
-- Добавлен тест на отсутствующий `.kdbx`, если это можно покрыть на уровне сервиса.
+- Повторяющиеся IPC-обработчики `try/catch -> toApiError` сведены через общий helper.
+- IPC channel names и shape `ApiResult` не менялись.
 
-### 0.2.11 — Entry editor modal
+### 0.2.15
 
-Цель: вынести JSX редактора записи из `App.tsx` в `EntryEditorModal`.
-
-Ограничения:
-
-- Не переносить IPC-логику сохранения записи.
-- Не менять формат `EditorState`.
-- Не менять поведение защищённых пользовательских полей.
-- `App.tsx` пока остаётся владельцем `editor`, `submitEntry`, `toggleEditorPassword`, `addCustomField`, `updateCustomField`, `removeCustomField`.
-
-Ожидаемый результат:
-
-- Новый компонент `apps/desktop/src/renderer/components/EntryEditorModal.tsx`.
-- `App.tsx` передаёт editor-state и callbacks через props.
-
-### 0.2.12 — Confirm and error modals
-
-Цель: вынести повторяющиеся confirmation/error-модалки из `App.tsx`.
-
-Кандидаты:
-
-- удаление записи;
-- удаление группы;
-- удаление вложения;
-- error modal.
-
-Ожидаемый результат:
-
-- Меньше JSX в нижней части `App.tsx`.
-- Единый небольшой компонент для confirm-сценариев, если это не усложнит props.
-
-### 0.2.13 — Sidebar and entry list
-
-Цель: вынести основные панели workspace:
-
-- `GroupsSidebar`;
-- `EntryList`.
-
-Ограничения:
-
-- Drag-and-drop поведение не менять.
-- Сначала переносить JSX и callbacks, не переписывать DnD-логику.
-
-### 0.2.14 — IPC helper
-
-Цель: снизить повторение `try/catch -> toApiError` в `apps/desktop/src/main/ipc.ts`.
-
-Ограничения:
-
-- Не менять IPC channel names.
-- Не менять shape `ApiResult`.
-- Touch ID, Auto-Type и database IPC проверять особенно внимательно.
-
-### 0.2.15 — Auto-Type contract cleanup
-
-Цель: проверить, нужны ли `autoTypeEnabled` и `autoTypeSequence` в renderer/shared-контракте после удаления UI-настроек Auto-Type.
-
-Ограничения:
-
-- Не ломать совместимость с KDBX customData без явного решения.
-- Не менять фиксированную последовательность Auto-Type.
-- Не менять глобальные hotkeys.
+- Renderer больше не отправляет Auto-Type поля при сохранении записи.
+- Фиксированная Auto-Type последовательность и KDBX customData defaults остаются на стороне main/database-service.
 
 ## Отложено
 

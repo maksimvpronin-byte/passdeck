@@ -107,8 +107,6 @@ export interface SaveEntryRequest {
   expires: boolean;
   expiryTime?: string;
   customFields?: CustomFieldInput[];
-  autoTypeEnabled?: boolean;
-  autoTypeSequence?: string;
 }
 
 export interface CreateGroupRequest {

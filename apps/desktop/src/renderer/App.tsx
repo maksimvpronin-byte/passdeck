@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { DEFAULT_AUTO_TYPE_SEQUENCE } from '@passdeck/shared';
 import type {
   AppSettings,
   CustomFieldInput,
@@ -8,40 +7,19 @@ import type {
   GroupSummary,
   SaveEntryRequest,
 } from '@passdeck/shared';
+import { ConfirmModal } from './components/ConfirmModal';
 import { CreateDatabaseModal } from './components/CreateDatabaseModal';
 import { EntryDetails } from './components/EntryDetails';
+import { EntryEditorModal } from './components/EntryEditorModal';
+import type { EditorCustomField, EditorState } from './components/EntryEditorModal';
+import { EntryList } from './components/EntryList';
+import { ErrorModal } from './components/ErrorModal';
+import { GroupsSidebar } from './components/GroupsSidebar';
 import { Logo } from './components/Logo';
 import { Modal } from './components/Modal';
 import { SettingsModal } from './components/SettingsModal';
 import { UnlockDatabaseModal } from './components/UnlockDatabaseModal';
 import { filterEntries } from './entry-filter';
-
-type EditorCustomField = {
-  id: string;
-  key: string;
-  value: string;
-  protected: boolean;
-  preserveValue: boolean;
-  hasStoredValue: boolean;
-  originalKey?: string;
-};
-
-type EditorState = {
-  entry?: EntrySummary;
-  groupId: string;
-  title: string;
-  username: string;
-  password: string;
-  passwordVisible: boolean;
-  passwordLoaded: boolean;
-  url: string;
-  notes: string;
-  tags: string;
-  favorite: boolean;
-  expires: boolean;
-  expiryTime: string;
-  customFields: EditorCustomField[];
-};
 
 const emptyEditor = (groupId: string): EditorState => ({
   groupId,
@@ -87,6 +65,10 @@ function resultMessage(result: { error?: { message: string; details?: string } }
   return result.error?.details
     ? `${result.error.message}\n${result.error.details}`
     : result.error?.message || 'Неизвестная ошибка';
+}
+
+function isMissingDatabaseError(result: { error?: { code: string } }): boolean {
+  return result.error?.code === 'DATABASE_FILE_MISSING';
 }
 
 export function App() {
@@ -310,6 +292,11 @@ export function App() {
         });
     setUnlockPassword('');
     if (!result.ok || !result.data) {
+      if (isMissingDatabaseError(result)) {
+        setUnlockTarget(null);
+        setOpenQueue([]);
+        setSettings(await window.passdeck.settings.get());
+      }
       setError(resultMessage(result));
       return;
     }
@@ -337,6 +324,11 @@ export function App() {
       return;
     }
     if (!result.ok || !result.data) {
+      if (isMissingDatabaseError(result)) {
+        setUnlockTarget(null);
+        setOpenQueue([]);
+        setSettings(await window.passdeck.settings.get());
+      }
       setError(resultMessage(result));
       return;
     }
@@ -573,8 +565,6 @@ export function App() {
       ...(editor.expires && editor.expiryTime
         ? { expiryTime: new Date(editor.expiryTime).toISOString() }
         : {}),
-      autoTypeEnabled: true,
-      autoTypeSequence: DEFAULT_AUTO_TYPE_SEQUENCE,
       customFields,
     };
     const result = await window.passdeck.database.saveEntry(request);
@@ -675,9 +665,7 @@ export function App() {
       }
 
       const parentId: string | null = current.parentId;
-      current = parentId
-        ? active.groups.find((item) => item.id === parentId)
-        : undefined;
+      current = parentId ? active.groups.find((item) => item.id === parentId) : undefined;
     }
 
     return true;
@@ -787,10 +775,7 @@ export function App() {
     setDropTargetEntryId(beforeEntry.id);
   }
 
-  async function dropEntryBefore(
-    event: React.DragEvent,
-    beforeEntry: EntrySummary,
-  ): Promise<void> {
+  async function dropEntryBefore(event: React.DragEvent, beforeEntry: EntrySummary): Promise<void> {
     event.preventDefault();
     if (!active || active.readOnly) {
       return;
@@ -824,10 +809,7 @@ export function App() {
     setToast('Порядок записей изменён');
   }
 
-  async function dropGroup(
-    event: React.DragEvent,
-    targetGroupId: string,
-  ): Promise<void> {
+  async function dropGroup(event: React.DragEvent, targetGroupId: string): Promise<void> {
     event.preventDefault();
 
     if (!active || active.readOnly) {
@@ -835,8 +817,7 @@ export function App() {
     }
 
     const groupId =
-      event.dataTransfer.getData('application/x-passdeck-group-id') ||
-      draggingGroupId;
+      event.dataTransfer.getData('application/x-passdeck-group-id') || draggingGroupId;
 
     setDraggingEntryId(null);
     setDraggingGroupId(null);
@@ -864,13 +845,9 @@ export function App() {
     setToast('Группа перемещена');
   }
 
-  async function dropOnGroup(
-    event: React.DragEvent,
-    targetGroupId: string,
-  ): Promise<void> {
+  async function dropOnGroup(event: React.DragEvent, targetGroupId: string): Promise<void> {
     const groupId =
-      event.dataTransfer.getData('application/x-passdeck-group-id') ||
-      draggingGroupId;
+      event.dataTransfer.getData('application/x-passdeck-group-id') || draggingGroupId;
 
     if (groupId) {
       await dropGroup(event, targetGroupId);
@@ -1241,204 +1218,56 @@ export function App() {
         </main>
       ) : (
         <main className="workspace">
-          <aside className="sidebar panel">
-            <div className="panel__header">
-              <div>
-                <span className="eyebrow">Структура</span>
-                <h2>Группы</h2>
-              </div>
-              <div className="panel__actions">
-                <button
-                  className="icon-button"
-                  type="button"
-                  onClick={() => setGroupModal(true)}
-                  title="Новая группа"
-                  disabled={active.readOnly}
-                >
-                  +
-                </button>
-                <button
-                  className="icon-button"
-                  type="button"
-                  onClick={() => selectedGroup && setConfirmGroupDelete(selectedGroup)}
-                  title="Удалить группу"
-                  disabled={active.readOnly || !selectedGroup || selectedGroup.parentId === null}
-                >
-                  ×
-                </button>
-              </div>
-            </div>
-            <div className="group-list">
-              <button
-                className={`group-row ${selectedGroupId === null ? 'group-row--active' : ''}`}
-                type="button"
-                onClick={() => {
-                  setSelectedGroupId(null);
-                  setSelectedEntryId(null);
-                }}
-              >
-                <span>▦</span>
-                <strong>Все записи</strong>
-                <em>{active.entries.length}</em>
-              </button>
-              {active.groups.map((group) => (
-                <button
-                  key={group.id}
-                  className={`group-row ${
-                    selectedGroupId === group.id ? 'group-row--active' : ''
-                  } ${dropTargetGroupId === group.id ? 'group-row--drop-target' : ''}`}
-                  style={{ paddingLeft: 14 + group.depth * 18 }}
-                  type="button"
-          draggable={group.parentId !== null && !active.readOnly}
-          onDragStart={(event) => beginGroupDrag(event, group.id)}
-          onDragEnd={endEntryDrag}
-                  onClick={() => {
-                    setSelectedGroupId(group.id);
-                    setSelectedEntryId(null);
-                  }}
-                  onDragEnter={(event) => allowTreeDrop(event, group.id)}
-                  onDragOver={(event) => allowTreeDrop(event, group.id)}
-                  onDragLeave={(event) => {
-                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                      setDropTargetGroupId((current) => (current === group.id ? null : current));
-                    }
-                  }}
-                  onDrop={(event) => void dropOnGroup(event, group.id)}
-                >
-                  <span>{group.depth === 0 ? '◇' : '›'}</span>
-                  <strong>{group.name}</strong>
-                  <em>{entryCountByGroupId.get(group.id) ?? 0}</em>
-                </button>
-              ))}
-            </div>
-            <div className="sidebar__footer">
-              <span>{basename(active.path)}</span>
-              <small>{active.readOnly ? 'Только чтение' : 'Локальный файл'}</small>
-            </div>
-          </aside>
+          <GroupsSidebar
+            active={active}
+            selectedGroup={selectedGroup}
+            selectedGroupId={selectedGroupId}
+            dropTargetGroupId={dropTargetGroupId}
+            entryCountByGroupId={entryCountByGroupId}
+            basename={basename}
+            onSelectAll={() => {
+              setSelectedGroupId(null);
+              setSelectedEntryId(null);
+            }}
+            onSelectGroup={(groupId) => {
+              setSelectedGroupId(groupId);
+              setSelectedEntryId(null);
+            }}
+            onCreateGroup={() => setGroupModal(true)}
+            onDeleteGroup={(group) => setConfirmGroupDelete(group)}
+            onBeginGroupDrag={(event, groupId) => beginGroupDrag(event, groupId)}
+            onEndDrag={endEntryDrag}
+            onAllowTreeDrop={(event, groupId) => allowTreeDrop(event, groupId)}
+            onGroupDragLeave={(groupId) =>
+              setDropTargetGroupId((current) => (current === groupId ? null : current))
+            }
+            onDropOnGroup={(event, groupId) => void dropOnGroup(event, groupId)}
+          />
 
-          <section className="entry-list panel">
-            {active.readOnly ? (
-              <div className="readonly-banner">
-                <div>
-                  <strong>База открыта только для чтения</strong>
-                  <span>
-                    Найден lock-файл PassDeck. Если база не открыта в другом окне, можно открыть
-                    её на запись.
-                  </span>
-                </div>
-                <button
-                  className="button button--secondary"
-                  type="button"
-                  onClick={() => void forceReadWriteActive()}
-                >
-                  Открыть на запись
-                </button>
-              </div>
-            ) : null}
-            <div className="entry-toolbar">
-              <label className="search-box">
-                <span>⌕</span>
-                <input
-                  id="search-input"
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Поиск в текущей базе"
-                />
-                {search ? (
-                  <button type="button" onClick={() => setSearch('')}>
-                    ×
-                  </button>
-                ) : null}
-              </label>
-              <button
-                className="button button--primary"
-                type="button"
-                onClick={() => beginEdit()}
-                disabled={active.readOnly}
-              >
-                + Запись
-              </button>
-            </div>
-            <div className="list-heading">
-              <div>
-                <span className="eyebrow">Записи</span>
-                <h2>{filteredEntries.length} элементов</h2>
-              </div>
-              <div className="list-heading__actions">
-                <button
-                  className="icon-button"
-                  type="button"
-                  onClick={() => void saveActive()}
-                  title="Сохранить"
-                  disabled={active.readOnly}
-                >
-                  ↓
-                </button>
-                <button
-                  className="icon-button"
-                  type="button"
-                  onClick={() => void lockActive()}
-                  title="Заблокировать"
-                >
-                  ◈
-                </button>
-              </div>
-            </div>
-            <div className="entries">
-              {filteredEntries.length === 0 ? (
-                <div className="empty-state">
-                  <span>◇</span>
-                  <strong>Записей не найдено</strong>
-                  <p>Создайте новую запись или измените фильтр.</p>
-                </div>
-              ) : (
-                filteredEntries.map((entry) => (
-                  <button
-                    key={entry.id}
-                    className={`entry-row ${selectedEntryId === entry.id ? 'entry-row--active' : ''} ${
-                      draggingEntryId === entry.id ? 'entry-row--dragging' : ''
-                    } ${dropTargetEntryId === entry.id ? 'entry-row--drop-target' : ''}`}
-                    type="button"
-                    draggable={!active.readOnly}
-                    onDragStart={(event) => beginEntryDrag(event, entry)}
-                    onDragEnd={endEntryDrag}
-                    onDragEnter={(event) => allowEntryOrderDrop(event, entry)}
-                    onDragOver={(event) => allowEntryOrderDrop(event, entry)}
-                    onDragLeave={(event) => {
-                      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                        setDropTargetEntryId((current) => (current === entry.id ? null : current));
-                      }
-                    }}
-                    onDrop={(event) => void dropEntryBefore(event, entry)}
-                    onClick={() => {
-                      setSelectedEntryId(entry.id);
-                      setRevealed(null);
-                    }}
-                  >
-                    <div className="entry-avatar">
-                      {entry.title.slice(0, 1).toLocaleUpperCase()}
-                    </div>
-                    <div className="entry-row__main">
-                      <div>
-                        <strong>{entry.title}</strong>
-                        {entry.favorite ? <span className="favorite">★</span> : null}
-                      </div>
-                      <span>{entry.username || 'Логин не указан'}</span>
-                    </div>
-                    <div className="entry-row__meta">
-                      <span>
-                        {entry.url ? entry.url.replace(/^https?:\/\//, '').split('/')[0] : '—'}
-                      </span>
-                      {entry.tags.length > 0 ? (
-                        <small>{entry.tags.slice(0, 2).join(' · ')}</small>
-                      ) : null}
-                    </div>
-                  </button>
-                ))
-              )}
-            </div>
-          </section>
+          <EntryList
+            entries={filteredEntries}
+            readOnly={active.readOnly}
+            search={search}
+            selectedEntryId={selectedEntryId}
+            draggingEntryId={draggingEntryId}
+            dropTargetEntryId={dropTargetEntryId}
+            onSearchChange={setSearch}
+            onForceReadWrite={() => void forceReadWriteActive()}
+            onBeginEdit={() => beginEdit()}
+            onSave={() => void saveActive()}
+            onLock={() => void lockActive()}
+            onSelectEntry={(entryId) => {
+              setSelectedEntryId(entryId);
+              setRevealed(null);
+            }}
+            onBeginEntryDrag={(event, entry) => beginEntryDrag(event, entry)}
+            onEndDrag={endEntryDrag}
+            onAllowEntryOrderDrop={(event, entry) => allowEntryOrderDrop(event, entry)}
+            onEntryDragLeave={(entryId) =>
+              setDropTargetEntryId((current) => (current === entryId ? null : current))
+            }
+            onDropEntryBefore={(event, entry) => void dropEntryBefore(event, entry)}
+          />
 
           <aside className="details panel">
             <EntryDetails
@@ -1490,202 +1319,17 @@ export function App() {
       ) : null}
 
       {editor && active ? (
-        <Modal
-          title={editor.entry ? 'Редактирование записи' : 'Новая запись'}
-          width={820}
+        <EntryEditorModal
+          editor={editor}
+          groups={active.groups}
+          onEditorChange={setEditor}
+          onSubmit={(event) => void submitEntry(event)}
           onClose={() => setEditor(null)}
-        >
-          <form className="form form--grid" onSubmit={(event) => void submitEntry(event)}>
-            <label className="span-2">
-              <span>Название</span>
-              <input
-                value={editor.title}
-                onChange={(event) => setEditor({ ...editor, title: event.target.value })}
-                autoFocus
-              />
-            </label>
-            <label>
-              <span>Логин</span>
-              <input
-                value={editor.username}
-                onChange={(event) => setEditor({ ...editor, username: event.target.value })}
-              />
-            </label>
-            <label>
-              <span>Пароль</span>
-              <div className="password-editor">
-                <input
-                  type={editor.passwordVisible ? 'text' : 'password'}
-                  value={editor.password}
-                  placeholder={editor.entry && !editor.passwordLoaded ? '••••••••••••' : ''}
-                  onChange={(event) =>
-                    setEditor({
-                      ...editor,
-                      password: event.target.value,
-                      passwordLoaded: true,
-                    })
-                  }
-                  autoComplete={editor.entry ? 'current-password' : 'new-password'}
-                />
-                <button
-                  className="password-editor__toggle"
-                  type="button"
-                  onClick={() => void toggleEditorPassword()}
-                  title={editor.passwordVisible ? 'Скрыть пароль' : 'Показать пароль'}
-                  aria-label={editor.passwordVisible ? 'Скрыть пароль' : 'Показать пароль'}
-                >
-                  ◉
-                </button>
-              </div>
-            </label>
-            <label className="span-2">
-              <span>URL</span>
-              <input
-                value={editor.url}
-                onChange={(event) => setEditor({ ...editor, url: event.target.value })}
-                placeholder="https://"
-              />
-            </label>
-            <label className="span-2">
-              <span>Теги через запятую</span>
-              <input
-                value={editor.tags}
-                onChange={(event) => setEditor({ ...editor, tags: event.target.value })}
-              />
-            </label>
-            <label className="span-2">
-              <span>Группа</span>
-              <select
-                value={editor.groupId}
-                onChange={(event) => setEditor({ ...editor, groupId: event.target.value })}
-              >
-                {active.groups.map((group) => (
-                  <option key={group.id} value={group.id}>
-                    {'—'.repeat(group.depth)} {group.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="span-2">
-              <span>Заметки</span>
-              <textarea
-                rows={6}
-                value={editor.notes}
-                onChange={(event) => setEditor({ ...editor, notes: event.target.value })}
-              />
-            </label>
-            <section className="custom-fields-editor span-2">
-              <div className="custom-fields-editor__header">
-                <div>
-                  <span>Пользовательские поля</span>
-                  <small>Дополнительные поля записи KDBX</small>
-                </div>
-                <button className="button button--secondary" type="button" onClick={addCustomField}>
-                  + Добавить поле
-                </button>
-              </div>
-              {editor.customFields.length === 0 ? (
-                <p className="custom-fields-editor__empty">Дополнительных полей пока нет.</p>
-              ) : (
-                <div className="custom-fields-editor__list">
-                  {editor.customFields.map((field) => (
-                    <div className="custom-field-row" key={field.id}>
-                      <label>
-                        <span>Название</span>
-                        <input
-                          value={field.key}
-                          onChange={(event) =>
-                            updateCustomField(field.id, { key: event.target.value })
-                          }
-                          placeholder="Например, API token"
-                        />
-                      </label>
-                      <label>
-                        <span>Значение</span>
-                        <input
-                          type={field.protected ? 'password' : 'text'}
-                          value={field.value}
-                          onChange={(event) =>
-                            updateCustomField(field.id, {
-                              value: event.target.value,
-                              preserveValue: false,
-                            })
-                          }
-                          placeholder={
-                            field.preserveValue && field.hasStoredValue
-                              ? 'Сохранено — оставьте пустым, чтобы не менять'
-                              : 'Введите значение'
-                          }
-                        />
-                        {field.preserveValue && field.hasStoredValue ? (
-                          <small className="form__hint">
-                            Скрытое значение останется без изменений.
-                          </small>
-                        ) : null}
-                      </label>
-                      <label className="check custom-field-row__protected">
-                        <input
-                          type="checkbox"
-                          checked={field.protected}
-                          onChange={(event) =>
-                            updateCustomField(field.id, { protected: event.target.checked })
-                          }
-                        />
-                        <span>Защищённое</span>
-                      </label>
-                      <button
-                        className="icon-button custom-field-row__remove"
-                        type="button"
-                        onClick={() => removeCustomField(field.id)}
-                        title="Удалить поле"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={editor.favorite}
-                onChange={(event) => setEditor({ ...editor, favorite: event.target.checked })}
-              />
-              <span>Избранное</span>
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={editor.expires}
-                onChange={(event) => setEditor({ ...editor, expires: event.target.checked })}
-              />
-              <span>Срок действия</span>
-            </label>
-            {editor.expires ? (
-              <label className="span-2">
-                <span>Дата окончания</span>
-                <input
-                  type="date"
-                  value={editor.expiryTime}
-                  onChange={(event) => setEditor({ ...editor, expiryTime: event.target.value })}
-                />
-              </label>
-            ) : null}
-            <div className="form__actions span-2">
-              <button
-                className="button button--ghost"
-                type="button"
-                onClick={() => setEditor(null)}
-              >
-                Отмена
-              </button>
-              <button className="button button--primary" type="submit">
-                Сохранить запись
-              </button>
-            </div>
-          </form>
-        </Modal>
+          onTogglePassword={() => void toggleEditorPassword()}
+          onAddCustomField={addCustomField}
+          onUpdateCustomField={updateCustomField}
+          onRemoveCustomField={removeCustomField}
+        />
       ) : null}
 
       {groupModal ? (
@@ -1724,88 +1368,36 @@ export function App() {
       ) : null}
 
       {confirmDelete ? (
-        <Modal title="Удалить запись?" onClose={() => setConfirmDelete(null)}>
-          <p className="confirm-text">
-            Запись «{confirmDelete.title}» будет перемещена в корзину базы.
-          </p>
-          <div className="form__actions">
-            <button
-              className="button button--ghost"
-              type="button"
-              onClick={() => setConfirmDelete(null)}
-            >
-              Отмена
-            </button>
-            <button
-              className="button button--danger"
-              type="button"
-              onClick={() => void deleteEntry()}
-            >
-              Удалить
-            </button>
-          </div>
-        </Modal>
+        <ConfirmModal
+          title="Удалить запись?"
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={() => void deleteEntry()}
+        >
+          {`Запись «${confirmDelete.title}» будет перемещена в корзину базы.`}
+        </ConfirmModal>
       ) : null}
 
       {confirmGroupDelete ? (
-        <Modal title="Удалить группу?" onClose={() => setConfirmGroupDelete(null)}>
-          <p className="confirm-text">
-            Группа «{confirmGroupDelete.name}» и все вложенные элементы будут перемещены в корзину
-            базы.
-          </p>
-          <div className="form__actions">
-            <button
-              className="button button--ghost"
-              type="button"
-              onClick={() => setConfirmGroupDelete(null)}
-            >
-              Отмена
-            </button>
-            <button
-              className="button button--danger"
-              type="button"
-              onClick={() => void deleteGroup()}
-            >
-              Удалить
-            </button>
-          </div>
-        </Modal>
+        <ConfirmModal
+          title="Удалить группу?"
+          onCancel={() => setConfirmGroupDelete(null)}
+          onConfirm={() => void deleteGroup()}
+        >
+          {`Группа «${confirmGroupDelete.name}» и все вложенные элементы будут перемещены в корзину базы.`}
+        </ConfirmModal>
       ) : null}
 
       {confirmAttachmentDelete ? (
-        <Modal title="Удалить вложение?" onClose={() => setConfirmAttachmentDelete(null)}>
-          <p className="confirm-text">
-            Вложение «{confirmAttachmentDelete.name}» будет удалено из записи.
-          </p>
-          <div className="form__actions">
-            <button
-              className="button button--ghost"
-              type="button"
-              onClick={() => setConfirmAttachmentDelete(null)}
-            >
-              Отмена
-            </button>
-            <button
-              className="button button--danger"
-              type="button"
-              onClick={() => void deleteAttachment()}
-            >
-              Удалить
-            </button>
-          </div>
-        </Modal>
+        <ConfirmModal
+          title="Удалить вложение?"
+          onCancel={() => setConfirmAttachmentDelete(null)}
+          onConfirm={() => void deleteAttachment()}
+        >
+          {`Вложение «${confirmAttachmentDelete.name}» будет удалено из записи.`}
+        </ConfirmModal>
       ) : null}
 
-      {error ? (
-        <Modal title="Ошибка" onClose={() => setError(null)}>
-          <pre className="error-text">{error}</pre>
-          <div className="form__actions">
-            <button className="button button--primary" type="button" onClick={() => setError(null)}>
-              Закрыть
-            </button>
-          </div>
-        </Modal>
-      ) : null}
+      {error ? <ErrorModal error={error} onClose={() => setError(null)} /> : null}
       {toast ? (
         <div className="toast" onAnimationEnd={() => setToast(null)}>
           {toast}

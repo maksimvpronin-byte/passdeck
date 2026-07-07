@@ -74,6 +74,13 @@ export class SettingsStore {
     await this.update({ recentDatabases: recent });
   }
 
+  async forgetDatabase(filePath: string): Promise<void> {
+    await this.update({
+      recentDatabases: this.settings.recentDatabases.filter((item) => item !== filePath),
+      lastOpenDatabases: this.settings.lastOpenDatabases.filter((item) => item !== filePath),
+    });
+  }
+
   async setLastOpenDatabases(paths: string[]): Promise<void> {
     await this.update({ lastOpenDatabases: [...new Set(paths)].slice(0, 100) });
   }

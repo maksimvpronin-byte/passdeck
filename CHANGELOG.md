@@ -1,6 +1,17 @@
 # Changelog
 
-## 0.2.9 — in progress
+## 0.2.15 — in progress
+
+- отсутствующий файл базы теперь отдаёт понятную ошибку `DATABASE_FILE_MISSING` вместо raw `ENOENT`;
+- недоступный путь удаляется из recent/restore списков и не всплывает повторно при следующем запуске;
+- редактор записи вынесен из `App.tsx` в компонент `EntryEditorModal`;
+- confirmation/error-модалки вынесены в переиспользуемые `ConfirmModal` и `ErrorModal`;
+- панели групп и списка записей вынесены в `GroupsSidebar` и `EntryList` без переписывания drag-and-drop логики;
+- повторяющиеся IPC-обработчики `try/catch -> toApiError` сведены через общий helper без изменения channel names и `ApiResult`;
+- renderer больше не отправляет Auto-Type настройки при сохранении записи, дефолтная последовательность остаётся на стороне main/database-service;
+- синхронизирована patch-версия проекта.
+
+## 0.2.9
 
 - модалки разблокировки и создания базы вынесены из `App.tsx` в компоненты `UnlockDatabaseModal` и `CreateDatabaseModal`;
 - состояние, валидация и IPC-операции открытия/создания баз остались в `App.tsx`;

@@ -1,6 +1,8 @@
 import { clipboard, dialog, ipcMain } from 'electron';
+import type { IpcMainInvokeEvent } from 'electron';
 import type {
   AppSettings,
+  ApiResult,
   CopySecretRequest,
   CreateDatabaseRequest,
   CreateGroupRequest,
@@ -15,6 +17,20 @@ import { toApiError } from './services/errors';
 import type { SettingsStore } from './services/settings-store';
 import { TouchIdService } from './services/touch-id-service';
 
+type IpcHandler<T, Args extends unknown[]> = (...args: Args) => T | Promise<T>;
+
+function asApiHandler<T, Args extends unknown[]>(
+  handler: IpcHandler<T, Args>,
+): (_event: IpcMainInvokeEvent, ...args: Args) => Promise<ApiResult<T>> {
+  return async (_event, ...args) => {
+    try {
+      return { ok: true, data: await handler(...args) };
+    } catch (error) {
+      return toApiError(error);
+    }
+  };
+}
+
 export function registerIpc(
   settings: SettingsStore,
   databases: DatabaseService,
@@ -23,52 +39,43 @@ export function registerIpc(
 ): void {
   const touchId = new TouchIdService();
 
-  ipcMain.handle('touchid:status', async (_event, filePath?: string) => {
-    try {
-      return { ok: true, data: await touchId.status(filePath) };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
+  ipcMain.handle(
+    'touchid:status',
+    asApiHandler((filePath?: string) => touchId.status(filePath)),
+  );
 
-  ipcMain.handle('touchid:store-password', async (_event, filePath: string, password: string) => {
-    try {
+  ipcMain.handle(
+    'touchid:store-password',
+    asApiHandler(async (filePath: string, password: string) => {
       await touchId.storePassword(filePath, password);
-      return { ok: true, data: null };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
+      return null;
+    }),
+  );
 
-  ipcMain.handle('touchid:forget', async (_event, filePath: string) => {
-    try {
+  ipcMain.handle(
+    'touchid:forget',
+    asApiHandler(async (filePath: string) => {
       await touchId.forget(filePath);
-      return { ok: true, data: null };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
+      return null;
+    }),
+  );
 
-  ipcMain.handle('touchid:open', async (_event, filePath: string) => {
-    try {
+  ipcMain.handle(
+    'touchid:open',
+    asApiHandler(async (filePath: string) => {
       const password = await touchId.getPassword(filePath);
-      const view = await databases.openDatabase({ path: filePath, password });
-      return { ok: true, data: view };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
+      return databases.openDatabase({ path: filePath, password });
+    }),
+  );
 
-  ipcMain.handle('touchid:unlock', async (_event, sessionId: string) => {
-    try {
+  ipcMain.handle(
+    'touchid:unlock',
+    asApiHandler(async (sessionId: string) => {
       const currentView = databases.getView(sessionId);
       const password = await touchId.getPassword(currentView.path);
-      const view = await databases.unlockDatabase(sessionId, password);
-      return { ok: true, data: view };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
+      return databases.unlockDatabase(sessionId, password);
+    }),
+  );
 
   ipcMain.handle('settings:get', () => settings.get());
   ipcMain.handle('settings:update', async (_event, patch: Partial<AppSettings>) => {
@@ -97,193 +104,137 @@ export function registerIpc(
   });
 
   ipcMain.handle('database:list', () => databases.listViews());
-  ipcMain.handle('database:get', (_event, sessionId: string) => {
-    try {
-      return { ok: true, data: databases.getView(sessionId) };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
-  ipcMain.handle('database:open', async (_event, request: OpenDatabaseRequest) => {
-    try {
+  ipcMain.handle(
+    'database:get',
+    asApiHandler((sessionId: string) => databases.getView(sessionId)),
+  );
+  ipcMain.handle(
+    'database:open',
+    asApiHandler(async (request: OpenDatabaseRequest) => {
       const view = await databases.openDatabase(request);
       if ('password' in request && typeof request.password === 'string') {
         void touchId.storePassword(view.path, request.password).catch(() => undefined);
       }
-      return { ok: true, data: view };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
-  ipcMain.handle('database:create', async (_event, request: CreateDatabaseRequest) => {
-    try {
-      return { ok: true, data: await databases.createDatabase(request) };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
-  ipcMain.handle('database:save', async (_event, sessionId: string) => {
-    try {
-      return { ok: true, data: await databases.saveDatabase(sessionId) };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
-  ipcMain.handle('database:save-entry', (_event, request: SaveEntryRequest) => {
-    try {
-      return { ok: true, data: databases.saveEntry(request) };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
-  ipcMain.handle('database:delete-entry', (_event, sessionId: string, entryId: string) => {
-    try {
-      return { ok: true, data: databases.deleteEntry(sessionId, entryId) };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
-  ipcMain.handle('database:create-group', (_event, request: CreateGroupRequest) => {
-    try {
-      return { ok: true, data: databases.createGroup(request) };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
-  ipcMain.handle('database:delete-group', (_event, sessionId: string, groupId: string) => {
-    try {
-      return { ok: true, data: databases.deleteGroup(sessionId, groupId) };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
-  ipcMain.handle('database:move-entry', (_event, request: MoveEntryRequest) => {
-    try {
-      return { ok: true, data: databases.moveEntry(request) };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
-  ipcMain.handle('database:move-group', (_event, request: MoveGroupRequest) => {
-    try {
-      return { ok: true, data: databases.moveGroup(request) };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
+      return view;
+    }),
+  );
+  ipcMain.handle(
+    'database:create',
+    asApiHandler((request: CreateDatabaseRequest) => databases.createDatabase(request)),
+  );
+  ipcMain.handle(
+    'database:save',
+    asApiHandler((sessionId: string) => databases.saveDatabase(sessionId)),
+  );
+  ipcMain.handle(
+    'database:save-entry',
+    asApiHandler((request: SaveEntryRequest) => databases.saveEntry(request)),
+  );
+  ipcMain.handle(
+    'database:delete-entry',
+    asApiHandler((sessionId: string, entryId: string) => databases.deleteEntry(sessionId, entryId)),
+  );
+  ipcMain.handle(
+    'database:create-group',
+    asApiHandler((request: CreateGroupRequest) => databases.createGroup(request)),
+  );
+  ipcMain.handle(
+    'database:delete-group',
+    asApiHandler((sessionId: string, groupId: string) => databases.deleteGroup(sessionId, groupId)),
+  );
+  ipcMain.handle(
+    'database:move-entry',
+    asApiHandler((request: MoveEntryRequest) => databases.moveEntry(request)),
+  );
+  ipcMain.handle(
+    'database:move-group',
+    asApiHandler((request: MoveGroupRequest) => databases.moveGroup(request)),
+  );
 
-  ipcMain.handle('database:lock', async (_event, sessionId: string) => {
-    try {
-      return { ok: true, data: await databases.lockDatabase(sessionId) };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
-  ipcMain.handle('database:unlock', async (_event, sessionId: string, password: string) => {
-    try {
+  ipcMain.handle(
+    'database:lock',
+    asApiHandler((sessionId: string) => databases.lockDatabase(sessionId)),
+  );
+  ipcMain.handle(
+    'database:unlock',
+    asApiHandler(async (sessionId: string, password: string) => {
       const view = await databases.unlockDatabase(sessionId, password);
       void touchId.storePassword(view.path, password).catch(() => undefined);
-      return { ok: true, data: view };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
-  ipcMain.handle('database:close', async (_event, sessionId: string) => {
-    try {
+      return view;
+    }),
+  );
+  ipcMain.handle(
+    'database:close',
+    asApiHandler(async (sessionId: string) => {
       await databases.closeDatabase(sessionId);
-      return { ok: true, data: null };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
-  ipcMain.handle('database:force-read-write', async (_event, sessionId: string) => {
-    try {
-      return { ok: true, data: await databases.forceReadWrite(sessionId) };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
-  ipcMain.handle('database:reveal-password', (_event, sessionId: string, entryId: string) => {
-    try {
-      return { ok: true, data: databases.revealPassword(sessionId, entryId) };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
+      return null;
+    }),
+  );
+  ipcMain.handle(
+    'database:force-read-write',
+    asApiHandler((sessionId: string) => databases.forceReadWrite(sessionId)),
+  );
+  ipcMain.handle(
+    'database:reveal-password',
+    asApiHandler((sessionId: string, entryId: string) =>
+      databases.revealPassword(sessionId, entryId),
+    ),
+  );
 
   ipcMain.handle(
     'database:reveal-custom-field',
-    (_event, sessionId: string, entryId: string, key: string) => {
-      try {
-        return { ok: true, data: databases.revealCustomField(sessionId, entryId, key) };
-      } catch (error) {
-        return toApiError(error);
-      }
-    },
+    asApiHandler((sessionId: string, entryId: string, key: string) =>
+      databases.revealCustomField(sessionId, entryId, key),
+    ),
   );
 
-  ipcMain.handle('database:add-attachments', async (_event, sessionId: string, entryId: string) => {
-    try {
+  ipcMain.handle(
+    'database:add-attachments',
+    asApiHandler(async (sessionId: string, entryId: string) => {
       const result = await dialog.showOpenDialog({
         title: 'Добавить вложения',
         properties: ['openFile', 'multiSelections'],
       });
       if (result.canceled || result.filePaths.length === 0) {
-        return { ok: true, data: databases.getView(sessionId) };
+        return databases.getView(sessionId);
       }
-      return {
-        ok: true,
-        data: await databases.addAttachments(sessionId, entryId, result.filePaths),
-      };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
+      return databases.addAttachments(sessionId, entryId, result.filePaths);
+    }),
+  );
 
   ipcMain.handle(
     'database:export-attachment',
-    async (_event, sessionId: string, entryId: string, name: string) => {
-      try {
-        const result = await dialog.showSaveDialog({
-          title: 'Сохранить вложение',
-          defaultPath: name,
-          properties: ['createDirectory', 'showOverwriteConfirmation'],
-        });
-        if (result.canceled || !result.filePath) {
-          return { ok: true, data: false };
-        }
-        await databases.exportAttachment(sessionId, entryId, name, result.filePath);
-        return { ok: true, data: true };
-      } catch (error) {
-        return toApiError(error);
+    asApiHandler(async (sessionId: string, entryId: string, name: string) => {
+      const result = await dialog.showSaveDialog({
+        title: 'Сохранить вложение',
+        defaultPath: name,
+        properties: ['createDirectory', 'showOverwriteConfirmation'],
+      });
+      if (result.canceled || !result.filePath) {
+        return false;
       }
-    },
+      await databases.exportAttachment(sessionId, entryId, name, result.filePath);
+      return true;
+    }),
   );
 
   ipcMain.handle(
     'database:delete-attachment',
-    (_event, sessionId: string, entryId: string, name: string) => {
-      try {
-        return { ok: true, data: databases.deleteAttachment(sessionId, entryId, name) };
-      } catch (error) {
-        return toApiError(error);
-      }
-    },
+    asApiHandler((sessionId: string, entryId: string, name: string) =>
+      databases.deleteAttachment(sessionId, entryId, name),
+    ),
   );
 
   ipcMain.handle(
     'autotype:set-selection',
-    (_event, sessionId: string | null, entryId: string | null) => {
-      try {
-        autoType.setSelection(sessionId, entryId);
-        return { ok: true, data: null };
-      } catch (error) {
-        return toApiError(error);
-      }
-    },
+    asApiHandler((sessionId: string | null, entryId: string | null) => {
+      autoType.setSelection(sessionId, entryId);
+      return null;
+    }),
   );
-  ipcMain.handle('clipboard:copy', (_event, request: CopySecretRequest) => {
-    try {
+  ipcMain.handle(
+    'clipboard:copy',
+    asApiHandler((request: CopySecretRequest) => {
       clipboard.writeText(request.value);
       const currentValue = request.value;
       const appSettings = settings.get();
@@ -301,22 +252,19 @@ export function registerIpc(
         }, seconds * 1000);
         timer.unref();
       }
-      return { ok: true, data: null };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
+      return null;
+    }),
+  );
 
-  ipcMain.handle('app:lock-all', async () => {
-    try {
+  ipcMain.handle(
+    'app:lock-all',
+    asApiHandler(async () => {
       for (const view of databases.listViews()) {
         if (!view.locked) {
           await databases.lockDatabase(view.sessionId);
         }
       }
-      return { ok: true, data: null };
-    } catch (error) {
-      return toApiError(error);
-    }
-  });
+      return null;
+    }),
+  );
 }

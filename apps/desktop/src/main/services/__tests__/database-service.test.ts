@@ -3,6 +3,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseService } from '../database-service';
+import type { PassDeckError } from '../errors';
 import type { SettingsStore } from '../settings-store';
 
 const temporaryDirectories: string[] = [];
@@ -12,13 +13,18 @@ async function createHarness() {
   temporaryDirectories.push(root);
   const backupDir = path.join(root, 'backups');
   const recoveryDir = path.join(root, 'recovery');
+  const forgottenDatabases: string[] = [];
   const settings = {
     backupDir,
     recoveryDir,
     rememberDatabase: () => Promise.resolve(),
+    forgetDatabase: (filePath: string) => {
+      forgottenDatabases.push(filePath);
+      return Promise.resolve();
+    },
     setLastOpenDatabases: () => Promise.resolve(),
   } as unknown as SettingsStore;
-  return { root, backupDir, settings, service: new DatabaseService(settings) };
+  return { root, backupDir, forgottenDatabases, settings, service: new DatabaseService(settings) };
 }
 
 afterEach(async () => {
@@ -30,6 +36,30 @@ afterEach(async () => {
 });
 
 describe('DatabaseService', () => {
+  it('returns a friendly error and forgets a missing database file', async () => {
+    const { root, forgottenDatabases, service } = await createHarness();
+    const filePath = path.join(root, 'Missing.kdbx');
+
+    await expect(
+      service.openDatabase({ path: filePath, password: 'PassDeck-Demo-2026!' }),
+    ).rejects.toMatchObject({
+      code: 'DATABASE_FILE_MISSING',
+      message: 'Файл базы не найден. Возможно, он был перемещён или удалён.',
+      details: filePath,
+    } satisfies Partial<PassDeckError>);
+    expect(forgottenDatabases).toEqual([filePath]);
+  });
+
+  it('skips and forgets missing databases during locked tab restore', async () => {
+    const { root, forgottenDatabases, service } = await createHarness();
+    const filePath = path.join(root, 'Missing.kdbx');
+
+    await service.restoreLockedTabs([filePath]);
+
+    expect(service.listViews()).toHaveLength(0);
+    expect(forgottenDatabases).toEqual([filePath]);
+  });
+
   it('creates, edits, saves, locks and reopens a KDBX 4.1 database', async () => {
     const { root, service } = await createHarness();
     const filePath = path.join(root, 'Demo.kdbx');
@@ -52,8 +82,6 @@ describe('DatabaseService', () => {
       tags: ['demo', 'test'],
       favorite: true,
       expires: false,
-      autoTypeEnabled: false,
-      autoTypeSequence: '{USERNAME}{TAB}{PASSWORD}',
     });
     expect(changed.dirty).toBe(true);
     expect(changed.entries).toHaveLength(1);
@@ -82,7 +110,7 @@ describe('DatabaseService', () => {
     const reopened = await second.service.openDatabase({ path: filePath, password });
     expect(reopened.entries[0]?.title).toBe('Example account');
     expect(reopened.entries[0]?.favorite).toBe(true);
-    expect(reopened.entries[0]?.autoTypeSequence).toBe('{USERNAME}{TAB}{PASSWORD}');
+    expect(reopened.entries[0]?.autoTypeSequence).toBe('{USERNAME}{TAB}{PASSWORD}{ENTER}');
     await second.service.closeDatabase(reopened.sessionId);
   }, 30_000);
 

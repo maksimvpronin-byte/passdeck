@@ -37,8 +37,7 @@ const api: PassDeckApi & TouchIdApi = {
     lock: (sessionId) => ipcRenderer.invoke('database:lock', sessionId),
     unlock: (sessionId, password) => ipcRenderer.invoke('database:unlock', sessionId, password),
     close: (sessionId) => ipcRenderer.invoke('database:close', sessionId),
-    forceReadWrite: (sessionId) =>
-      ipcRenderer.invoke('database:force-read-write', sessionId),
+    forceReadWrite: (sessionId) => ipcRenderer.invoke('database:force-read-write', sessionId),
     revealPassword: (sessionId, entryId) =>
       ipcRenderer.invoke('database:reveal-password', sessionId, entryId),
     revealCustomField: (sessionId, entryId, key) =>
@@ -52,8 +51,7 @@ const api: PassDeckApi & TouchIdApi = {
   },
 
   autoType: {
-    setSelection: (sessionId, entryId) =>
-      ipcRenderer.invoke('autotype:set-selection', sessionId, entryId),
+    setSelection: (selection) => ipcRenderer.invoke('autotype:set-selection', selection),
     onError: (listener) => {
       const handler = (_event: Electron.IpcRendererEvent, message: string) => listener(message);
       ipcRenderer.on('autotype:error', handler);

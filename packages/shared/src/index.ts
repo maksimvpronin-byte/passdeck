@@ -57,8 +57,6 @@ export interface EntrySummary {
   modifiedAt?: string;
   customFields: CustomFieldSummary[];
   attachments: AttachmentSummary[];
-  autoTypeEnabled: boolean;
-  autoTypeSequence: string;
 }
 
 export interface GroupSummary {
@@ -133,6 +131,11 @@ export interface CopySecretRequest {
   kind: 'password' | 'username' | 'url' | 'custom';
 }
 
+export interface AutoTypeSelection {
+  sessionId: string | null;
+  entryId: string | null;
+}
+
 export interface ApiResult<T> {
   ok: boolean;
   data?: T;
@@ -179,7 +182,7 @@ export interface PassDeckApi {
     ): Promise<ApiResult<DatabaseView>>;
   };
   autoType: {
-    setSelection(sessionId: string | null, entryId: string | null): Promise<ApiResult<null>>;
+    setSelection(selection: AutoTypeSelection): Promise<ApiResult<null>>;
     onError(listener: (message: string) => void): () => void;
   };
   clipboard: {

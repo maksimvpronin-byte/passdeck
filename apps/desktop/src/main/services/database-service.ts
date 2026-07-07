@@ -777,9 +777,6 @@ export class DatabaseService {
           attachments: [...entry.binaries.entries()]
             .map(([name, binary]) => ({ name, size: attachmentSize(binary) }))
             .sort((left, right) => left.name.localeCompare(right.name)),
-          autoTypeEnabled: entry.customData?.get(AUTO_TYPE_ENABLED_KEY)?.value !== 'false',
-          autoTypeSequence:
-            entry.customData?.get(AUTO_TYPE_SEQUENCE_KEY)?.value || DEFAULT_AUTO_TYPE_SEQUENCE,
         });
       }
 

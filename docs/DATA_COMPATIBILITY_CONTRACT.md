@@ -61,6 +61,8 @@ Adding a new `PassDeck.*` key requires:
 
 Renderer save requests do not own Auto-Type settings. The main process writes the fixed defaults.
 
+Renderer entry summaries do not expose Auto-Type metadata. Auto-Type uses a main-process payload derived from the selected session and entry.
+
 ## PassDeck State Not Stored In KDBX
 
 The following are application/session state and must not be stored inside the KDBX file:

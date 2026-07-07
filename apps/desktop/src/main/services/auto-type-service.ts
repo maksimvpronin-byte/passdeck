@@ -1,17 +1,11 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import {
-  clipboard,
-  globalShortcut,
-  systemPreferences,
-  type BrowserWindow,
-} from 'electron';
+import { clipboard, globalShortcut, systemPreferences, type BrowserWindow } from 'electron';
 
-import {
-  parseAutoTypeSequence,
-  type AutoTypeAction,
-} from './auto-type-sequence';
+import { parseAutoTypeSequence, type AutoTypeAction } from './auto-type-sequence';
+import type { AutoTypeSelection } from '@passdeck/shared';
+import { normalizeAutoTypeSelection } from './auto-type-selection';
 import type { DatabaseService } from './database-service';
 import { PassDeckError } from './errors';
 import {
@@ -24,16 +18,12 @@ import {
   buildAutoTypeMacOsTargetScript,
   runAutoTypeMacOsScript,
 } from './auto-type-macos';
-import {
-  AUTO_TYPE_TARGET_CHANGED_MARKER,
-  buildAutoTypeWindowsScript,
-} from './auto-type-windows';
+import { AUTO_TYPE_TARGET_CHANGED_MARKER, buildAutoTypeWindowsScript } from './auto-type-windows';
 
 const execFileAsync = promisify(execFile);
 
 export const AUTO_TYPE_SHORTCUT = 'CommandOrControl+Alt+A';
-export const AUTO_TYPE_SHORTCUT_LABEL =
-  process.platform === 'darwin' ? '⌘+⌥+A' : 'Ctrl+Alt+A';
+export const AUTO_TYPE_SHORTCUT_LABEL = process.platform === 'darwin' ? '⌘+⌥+A' : 'Ctrl+Alt+A';
 
 interface ForegroundWindowInfo {
   handle: number;
@@ -98,10 +88,7 @@ try { $processName = (Get-Process -Id $processIdValue -ErrorAction Stop).Process
   const parsed = JSON.parse(output) as Partial<ForegroundWindowInfo>;
 
   if (!parsed.handle || !parsed.processId) {
-    throw new PassDeckError(
-      'AUTO_TYPE_TARGET',
-      'Не удалось определить активное окно.',
-    );
+    throw new PassDeckError('AUTO_TYPE_TARGET', 'Не удалось определить активное окно.');
   }
 
   return {
@@ -116,9 +103,7 @@ async function sendActionsToWindows(
   target: ForegroundWindowInfo,
   actions: AutoTypeAction[],
 ): Promise<void> {
-  const result = await runPowerShell(
-    buildAutoTypeWindowsScript(target.handle, actions),
-  );
+  const result = await runPowerShell(buildAutoTypeWindowsScript(target.handle, actions));
 
   if (result.includes(AUTO_TYPE_TARGET_CHANGED_MARKER)) {
     throw new PassDeckError(
@@ -139,9 +124,7 @@ async function readMacOsTargetPid(): Promise<number> {
   let result: string;
 
   try {
-    result = await runAutoTypeMacOsScript(
-      buildAutoTypeMacOsTargetScript(process.pid),
-    );
+    result = await runAutoTypeMacOsScript(buildAutoTypeMacOsTargetScript(process.pid));
   } catch (error) {
     if (isMacOsPermissionError(error)) {
       throw new PassDeckError(
@@ -160,40 +143,26 @@ async function readMacOsTargetPid(): Promise<number> {
   }
 
   if (result.includes(AUTO_TYPE_MAC_NO_TARGET_MARKER)) {
-    throw new PassDeckError(
-      'AUTO_TYPE_TARGET',
-      'Не удалось определить активное приложение macOS.',
-    );
+    throw new PassDeckError('AUTO_TYPE_TARGET', 'Не удалось определить активное приложение macOS.');
   }
 
   if (!result.startsWith(AUTO_TYPE_MAC_TARGET_PID_PREFIX)) {
-    throw new PassDeckError(
-      'AUTO_TYPE_TARGET',
-      'Не удалось определить активное приложение macOS.',
-    );
+    throw new PassDeckError('AUTO_TYPE_TARGET', 'Не удалось определить активное приложение macOS.');
   }
 
   const targetPid = Number(result.slice(AUTO_TYPE_MAC_TARGET_PID_PREFIX.length));
   if (!Number.isInteger(targetPid) || targetPid <= 0) {
-    throw new PassDeckError(
-      'AUTO_TYPE_TARGET',
-      'Не удалось определить активное приложение macOS.',
-    );
+    throw new PassDeckError('AUTO_TYPE_TARGET', 'Не удалось определить активное приложение macOS.');
   }
 
   return targetPid;
 }
 
-async function runMacOsAction(
-  targetPid: number,
-  action: AutoTypeAction,
-): Promise<void> {
+async function runMacOsAction(targetPid: number, action: AutoTypeAction): Promise<void> {
   let result: string;
 
   try {
-    result = await runAutoTypeMacOsScript(
-      buildAutoTypeMacOsScript(targetPid, [action]),
-    );
+    result = await runAutoTypeMacOsScript(buildAutoTypeMacOsScript(targetPid, [action]));
   } catch (error) {
     if (isMacOsPermissionError(error)) {
       throw new PassDeckError(
@@ -259,9 +228,10 @@ export class AutoTypeService {
     globalShortcut.unregister(AUTO_TYPE_SHORTCUT);
   }
 
-  setSelection(sessionId: string | null, entryId: string | null): void {
-    this.selectedSessionId = sessionId;
-    this.selectedEntryId = entryId;
+  setSelection(selection: AutoTypeSelection): void {
+    const normalized = normalizeAutoTypeSelection(selection);
+    this.selectedSessionId = normalized.sessionId;
+    this.selectedEntryId = normalized.entryId;
   }
 
   private async runFromShortcut(): Promise<void> {
@@ -308,10 +278,7 @@ export class AutoTypeService {
 
       await sendActionsToWindows(target, actions);
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : 'Не удалось выполнить Auto-Type.';
+      const message = error instanceof Error ? error.message : 'Не удалось выполнить Auto-Type.';
       const window = this.getMainWindow();
 
       if (window) {

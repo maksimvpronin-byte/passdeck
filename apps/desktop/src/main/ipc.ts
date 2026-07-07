@@ -3,6 +3,7 @@ import type { IpcMainInvokeEvent } from 'electron';
 import type {
   AppSettings,
   ApiResult,
+  AutoTypeSelection,
   CopySecretRequest,
   CreateDatabaseRequest,
   CreateGroupRequest,
@@ -227,8 +228,8 @@ export function registerIpc(
 
   ipcMain.handle(
     'autotype:set-selection',
-    asApiHandler((sessionId: string | null, entryId: string | null) => {
-      autoType.setSelection(sessionId, entryId);
+    asApiHandler((selection: AutoTypeSelection) => {
+      autoType.setSelection(selection);
       return null;
     }),
   );

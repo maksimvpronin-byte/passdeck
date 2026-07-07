@@ -110,7 +110,6 @@ describe('DatabaseService', () => {
     const reopened = await second.service.openDatabase({ path: filePath, password });
     expect(reopened.entries[0]?.title).toBe('Example account');
     expect(reopened.entries[0]?.favorite).toBe(true);
-    expect(reopened.entries[0]?.autoTypeSequence).toBe('{USERNAME}{TAB}{PASSWORD}{ENTER}');
     await second.service.closeDatabase(reopened.sessionId);
   }, 30_000);
 

@@ -151,10 +151,10 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    void window.passdeck.autoType.setSelection(
-      active && !active.locked ? active.sessionId : null,
-      selectedEntry?.id ?? null,
-    );
+    void window.passdeck.autoType.setSelection({
+      sessionId: active && !active.locked ? active.sessionId : null,
+      entryId: selectedEntry?.id ?? null,
+    });
   }, [active, selectedEntry?.id]);
 
   useEffect(() => {

@@ -34,6 +34,7 @@ import {
 import { PassDeckError } from './errors';
 import { KdbxOperations } from './kdbx-operations';
 import { LockFileService } from './lock-file-service';
+import { AUTO_TYPE_ENABLED_KEY, AUTO_TYPE_SEQUENCE_KEY, FAVORITE_KEY } from './passdeck-metadata';
 import type { SettingsStore } from './settings-store';
 
 export interface AutoTypePayload {
@@ -48,9 +49,6 @@ const STANDARD_FIELDS = new Set(['Title', 'UserName', 'Password', 'URL', 'Notes'
 const RESERVED_FIELD_NAMES = new Set(
   [...STANDARD_FIELDS].map((fieldName) => fieldName.toLowerCase()),
 );
-const FAVORITE_KEY = 'PassDeck.Favorite';
-const AUTO_TYPE_ENABLED_KEY = 'PassDeck.AutoTypeEnabled';
-const AUTO_TYPE_SEQUENCE_KEY = 'PassDeck.AutoTypeSequence';
 const MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024;
 const MAX_ENTRY_ATTACHMENTS_BYTES = 100 * 1024 * 1024;
 

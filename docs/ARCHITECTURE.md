@@ -34,6 +34,8 @@
 - `test-data` — синтетические KDBX fixtures;
 - `docs` — архитектура, безопасность и roadmap.
 
+Контракт KDBX-совместимости и PassDeck-owned metadata описан в [`DATA_COMPATIBILITY_CONTRACT.md`](DATA_COMPATIBILITY_CONTRACT.md).
+
 ## Состояние базы
 
 Каждая открытая вкладка соответствует main-process session:

@@ -1,4 +1,3 @@
-import { hostname } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
@@ -8,7 +7,6 @@ import {
   readFile,
   readdir,
   rename,
-  rm,
   stat,
   unlink,
   writeFile,
@@ -29,25 +27,14 @@ import type {
   SaveEntryRequest,
 } from '@passdeck/shared';
 import { configureArgon2 } from './argon2';
+import {
+  DatabaseSessionStore,
+  type DatabaseSession,
+  type FileFingerprint,
+} from './database-session-store';
 import { PassDeckError } from './errors';
+import { LockFileService } from './lock-file-service';
 import type { SettingsStore } from './settings-store';
-
-interface FileFingerprint {
-  mtimeMs: number;
-  size: number;
-}
-
-interface DatabaseSession {
-  id: string;
-  path: string;
-  name: string;
-  db: Kdbx | undefined;
-  locked: boolean;
-  readOnly: boolean;
-  dirty: boolean;
-  ownsLock: boolean;
-  fingerprint: FileFingerprint | undefined;
-}
 
 export interface AutoTypePayload {
   title: string;
@@ -94,20 +81,21 @@ function attachmentSize(binary: KdbxBinary | KdbxBinaryWithHash): number {
 }
 
 export class DatabaseService {
-  private readonly sessions = new Map<string, DatabaseSession>();
+  private readonly sessions = new DatabaseSessionStore();
+  private readonly locks = new LockFileService();
 
   constructor(private readonly settings: SettingsStore) {
     configureArgon2();
   }
 
   listViews(): DatabaseView[] {
-    return [...this.sessions.values()].map((session) => this.toView(session));
+    return this.sessions.list().map((session) => this.toView(session));
   }
 
   async restoreLockedTabs(paths: string[]): Promise<void> {
     for (const item of paths) {
       const absolutePath = path.resolve(item);
-      if ([...this.sessions.values()].some((session) => session.path === absolutePath)) {
+      if (this.sessions.findByPath(absolutePath)) {
         continue;
       }
       if (!(await this.fileExists(absolutePath))) {
@@ -115,7 +103,7 @@ export class DatabaseService {
         continue;
       }
       const id = randomUUID();
-      this.sessions.set(id, {
+      this.sessions.add({
         id,
         path: absolutePath,
         name: path.basename(absolutePath, path.extname(absolutePath)),
@@ -130,12 +118,12 @@ export class DatabaseService {
   }
 
   getView(sessionId: string): DatabaseView {
-    return this.toView(this.getSession(sessionId));
+    return this.toView(this.sessions.get(sessionId));
   }
 
   async openDatabase(request: OpenDatabaseRequest): Promise<DatabaseView> {
     const absolutePath = path.resolve(request.path);
-    const existing = [...this.sessions.values()].find((session) => session.path === absolutePath);
+    const existing = this.sessions.findByPath(absolutePath);
     if (existing) {
       if (existing.locked) {
         await this.unlockDatabase(existing.id, request.password);
@@ -144,7 +132,7 @@ export class DatabaseService {
     }
 
     await this.ensureDatabaseFileExists(absolutePath);
-    const lockState = await this.acquireLock(absolutePath, request.forceReadWrite === true);
+    const lockState = await this.locks.acquire(absolutePath, request.forceReadWrite === true);
     try {
       const db = await this.loadKdbx(absolutePath, request.password);
       const fingerprint = await this.getFingerprint(absolutePath);
@@ -159,13 +147,13 @@ export class DatabaseService {
         ownsLock: lockState.ownsLock,
         fingerprint,
       };
-      this.sessions.set(session.id, session);
+      this.sessions.add(session);
       await this.settings.rememberDatabase(absolutePath);
       await this.persistOpenTabs();
       return this.toView(session);
     } catch (error) {
       if (lockState.ownsLock) {
-        await this.releaseLockFile(absolutePath);
+        await this.locks.releaseFile(absolutePath);
       }
       throw error;
     }
@@ -204,7 +192,7 @@ export class DatabaseService {
     db.meta.historyMaxItems = 10;
     db.createRecycleBin();
 
-    const lockState = await this.acquireLock(absolutePath, true);
+    const lockState = await this.locks.acquire(absolutePath, true);
     const session: DatabaseSession = {
       id: randomUUID(),
       path: absolutePath,
@@ -216,7 +204,7 @@ export class DatabaseService {
       ownsLock: lockState.ownsLock,
       fingerprint: undefined,
     };
-    this.sessions.set(session.id, session);
+    this.sessions.add(session);
 
     try {
       await this.saveDatabase(session.id, true);
@@ -225,13 +213,13 @@ export class DatabaseService {
       return this.toView(session);
     } catch (error) {
       this.sessions.delete(session.id);
-      await this.releaseLock(session);
+      await this.locks.release(session);
       throw error;
     }
   }
 
   async saveDatabase(sessionId: string, isInitial = false): Promise<DatabaseView> {
-    const session = this.getUnlockedSession(sessionId);
+    const session = this.sessions.getUnlocked(sessionId);
     if (session.readOnly) {
       throw new PassDeckError('READ_ONLY', 'База открыта только для чтения.');
     }
@@ -278,7 +266,7 @@ export class DatabaseService {
   }
 
   async saveAllDirty(): Promise<void> {
-    for (const session of this.sessions.values()) {
+    for (const session of this.sessions.list()) {
       if (session.dirty && !session.locked && !session.readOnly) {
         await this.saveDatabase(session.id);
       }
@@ -286,7 +274,7 @@ export class DatabaseService {
   }
 
   saveEntry(request: SaveEntryRequest): DatabaseView {
-    const session = this.getWritableSession(request.sessionId);
+    const session = this.sessions.getWritable(request.sessionId);
     const db = session.db;
     const group = this.findGroup(db, request.groupId);
     if (!group || this.isRecycleBin(db, group)) {
@@ -361,7 +349,7 @@ export class DatabaseService {
   }
 
   deleteEntry(sessionId: string, entryId: string): DatabaseView {
-    const session = this.getWritableSession(sessionId);
+    const session = this.sessions.getWritable(sessionId);
     const entry = this.findEntry(session.db, entryId);
     if (!entry) {
       throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
@@ -372,7 +360,7 @@ export class DatabaseService {
   }
 
   moveEntry(request: MoveEntryRequest): DatabaseView {
-    const session = this.getWritableSession(request.sessionId);
+    const session = this.sessions.getWritable(request.sessionId);
     const entry = this.findEntry(session.db, request.entryId);
     if (!entry) {
       throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
@@ -397,7 +385,7 @@ export class DatabaseService {
   }
 
   moveGroup(request: MoveGroupRequest): DatabaseView {
-    const session = this.getWritableSession(request.sessionId);
+    const session = this.sessions.getWritable(request.sessionId);
     const group = this.findGroup(session.db, request.groupId);
 
     if (!group || this.isRecycleBin(session.db, group)) {
@@ -440,7 +428,7 @@ export class DatabaseService {
   }
 
   deleteGroup(sessionId: string, groupId: string): DatabaseView {
-    const session = this.getWritableSession(sessionId);
+    const session = this.sessions.getWritable(sessionId);
     const group = this.findGroup(session.db, groupId);
 
     if (!group || this.isRecycleBin(session.db, group)) {
@@ -458,7 +446,7 @@ export class DatabaseService {
   }
 
   createGroup(request: CreateGroupRequest): DatabaseView {
-    const session = this.getWritableSession(request.sessionId);
+    const session = this.sessions.getWritable(request.sessionId);
     const parent = request.parentId
       ? this.findGroup(session.db, request.parentId)
       : session.db.getDefaultGroup();
@@ -471,7 +459,7 @@ export class DatabaseService {
   }
 
   async lockDatabase(sessionId: string): Promise<DatabaseView> {
-    const session = this.getSession(sessionId);
+    const session = this.sessions.get(sessionId);
     if (session.dirty && !session.readOnly && session.db) {
       await this.saveDatabase(sessionId);
     }
@@ -482,12 +470,12 @@ export class DatabaseService {
   }
 
   async unlockDatabase(sessionId: string, password: string): Promise<DatabaseView> {
-    const session = this.getSession(sessionId);
+    const session = this.sessions.get(sessionId);
     if (!session.locked) {
       return this.toView(session);
     }
     if (!session.ownsLock) {
-      const lockState = await this.acquireLock(session.path, false);
+      const lockState = await this.locks.acquire(session.path, false);
       session.readOnly = lockState.readOnly;
       session.ownsLock = lockState.ownsLock;
     }
@@ -495,7 +483,7 @@ export class DatabaseService {
       session.db = await this.loadKdbx(session.path, password);
     } catch (error) {
       if (session.ownsLock) {
-        await this.releaseLock(session);
+        await this.locks.release(session);
       }
       throw error;
     }
@@ -506,7 +494,7 @@ export class DatabaseService {
   }
 
   revealPassword(sessionId: string, entryId: string): string {
-    const session = this.getUnlockedSession(sessionId);
+    const session = this.sessions.getUnlocked(sessionId);
     const entry = this.findEntry(session.db, entryId);
     if (!entry) {
       throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
@@ -515,7 +503,7 @@ export class DatabaseService {
   }
 
   revealCustomField(sessionId: string, entryId: string, key: string): string {
-    const session = this.getUnlockedSession(sessionId);
+    const session = this.sessions.getUnlocked(sessionId);
     const entry = this.findEntry(session.db, entryId);
     if (!entry) {
       throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
@@ -536,7 +524,7 @@ export class DatabaseService {
     entryId: string,
     filePaths: string[],
   ): Promise<DatabaseView> {
-    const session = this.getWritableSession(sessionId);
+    const session = this.sessions.getWritable(sessionId);
     const entry = this.findEntry(session.db, entryId);
     if (!entry) {
       throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
@@ -610,7 +598,7 @@ export class DatabaseService {
     name: string,
     destinationPath: string,
   ): Promise<void> {
-    const session = this.getUnlockedSession(sessionId);
+    const session = this.sessions.getUnlocked(sessionId);
     const entry = this.findEntry(session.db, entryId);
     if (!entry) {
       throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
@@ -624,7 +612,7 @@ export class DatabaseService {
   }
 
   deleteAttachment(sessionId: string, entryId: string, name: string): DatabaseView {
-    const session = this.getWritableSession(sessionId);
+    const session = this.sessions.getWritable(sessionId);
     const entry = this.findEntry(session.db, entryId);
     if (!entry) {
       throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
@@ -640,7 +628,7 @@ export class DatabaseService {
   }
 
   getAutoTypePayload(sessionId: string, entryId: string): AutoTypePayload {
-    const session = this.getUnlockedSession(sessionId);
+    const session = this.sessions.getUnlocked(sessionId);
     const entry = this.findEntry(session.db, entryId);
     if (!entry) {
       throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
@@ -655,22 +643,22 @@ export class DatabaseService {
   }
 
   async closeDatabase(sessionId: string): Promise<void> {
-    const session = this.getSession(sessionId);
+    const session = this.sessions.get(sessionId);
     if (session.dirty && !session.readOnly && session.db) {
       await this.saveDatabase(session.id);
     }
     this.sessions.delete(session.id);
-    await this.releaseLock(session);
+    await this.locks.release(session);
     await this.persistOpenTabs();
   }
 
   async forceReadWrite(sessionId: string): Promise<DatabaseView> {
-    const session = this.getUnlockedSession(sessionId);
+    const session = this.sessions.getUnlocked(sessionId);
     if (!session.readOnly) {
       return this.toView(session);
     }
 
-    const lockState = await this.acquireLock(session.path, true);
+    const lockState = await this.locks.acquire(session.path, true);
     session.readOnly = false;
     session.ownsLock = lockState.ownsLock;
     return this.toView(session);
@@ -679,15 +667,15 @@ export class DatabaseService {
   async shutdown(): Promise<void> {
     await this.saveAllDirty();
     await this.persistOpenTabs();
-    for (const session of [...this.sessions.values()]) {
-      await this.releaseLock(session);
+    for (const session of this.sessions.list()) {
+      await this.locks.release(session);
     }
   }
 
   async closeAll(): Promise<void> {
     await this.saveAllDirty();
-    for (const session of [...this.sessions.values()]) {
-      await this.releaseLock(session);
+    for (const session of this.sessions.list()) {
+      await this.locks.release(session);
     }
     this.sessions.clear();
     await this.settings.setLastOpenDatabases([]);
@@ -832,30 +820,6 @@ export class DatabaseService {
     };
   }
 
-  private getSession(sessionId: string): DatabaseSession {
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      throw new PassDeckError('SESSION_NOT_FOUND', 'Сессия базы не найдена.');
-    }
-    return session;
-  }
-
-  private getUnlockedSession(sessionId: string): DatabaseSession & { db: Kdbx } {
-    const session = this.getSession(sessionId);
-    if (!session.db || session.locked) {
-      throw new PassDeckError('LOCKED', 'База заблокирована.');
-    }
-    return session as DatabaseSession & { db: Kdbx };
-  }
-
-  private getWritableSession(sessionId: string): DatabaseSession & { db: Kdbx } {
-    const session = this.getUnlockedSession(sessionId);
-    if (session.readOnly) {
-      throw new PassDeckError('READ_ONLY', 'База открыта только для чтения.');
-    }
-    return session;
-  }
-
   private isRecycleBin(db: Kdbx, group: KdbxGroup): boolean {
     return db.meta.recycleBinUuid?.toString() === group.uuid.toString();
   }
@@ -912,46 +876,6 @@ export class DatabaseService {
     group.entries.splice(beforeIndex > currentIndex ? beforeIndex - 1 : beforeIndex, 0, movedEntry);
   }
 
-  private lockPath(filePath: string): string {
-    return `${filePath}.passdeck.lock`;
-  }
-
-  private async acquireLock(
-    filePath: string,
-    forceReadWrite: boolean,
-  ): Promise<{ readOnly: boolean; ownsLock: boolean }> {
-    const lockPath = this.lockPath(filePath);
-    if (forceReadWrite) {
-      await rm(lockPath, { force: true });
-    }
-
-    try {
-      await writeFile(
-        lockPath,
-        `${JSON.stringify({ pid: process.pid, host: hostname(), openedAt: new Date().toISOString() }, null, 2)}\n`,
-        { flag: 'wx', encoding: 'utf8', mode: 0o600 },
-      );
-      return { readOnly: false, ownsLock: true };
-    } catch (error) {
-      const nodeError = error as NodeJS.ErrnoException;
-      if (nodeError.code === 'EEXIST') {
-        return { readOnly: true, ownsLock: false };
-      }
-      throw error;
-    }
-  }
-
-  private async releaseLock(session: DatabaseSession): Promise<void> {
-    if (session.ownsLock) {
-      await this.releaseLockFile(session.path);
-      session.ownsLock = false;
-    }
-  }
-
-  private async releaseLockFile(filePath: string): Promise<void> {
-    await rm(this.lockPath(filePath), { force: true });
-  }
-
   private async createBackup(filePath: string): Promise<void> {
     await mkdir(this.settings.backupDir, { recursive: true });
     const base = path.basename(filePath, path.extname(filePath));
@@ -1004,8 +928,6 @@ export class DatabaseService {
   }
 
   private async persistOpenTabs(): Promise<void> {
-    await this.settings.setLastOpenDatabases(
-      [...this.sessions.values()].map((session) => session.path),
-    );
+    await this.settings.setLastOpenDatabases(this.sessions.openPaths());
   }
 }

@@ -100,6 +100,8 @@ npm run build
 
 ## Отложено
 
+Подробный план крупных отложенных работ: [`DEFERRED_BIG_WORK_PLAN.md`](DEFERRED_BIG_WORK_PLAN.md).
+
 - Большие архитектурные перестройки main/database-service.
 - Изменения формата базы.
 - Изменения Auto-Type IPC.

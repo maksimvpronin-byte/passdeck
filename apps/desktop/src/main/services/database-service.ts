@@ -35,6 +35,7 @@ import { PassDeckError } from './errors';
 import { KdbxOperations } from './kdbx-operations';
 import { LockFileService } from './lock-file-service';
 import { AUTO_TYPE_ENABLED_KEY, AUTO_TYPE_SEQUENCE_KEY, FAVORITE_KEY } from './passdeck-metadata';
+import { RecoveryService } from './recovery-service';
 import type { SettingsStore } from './settings-store';
 
 export interface AutoTypePayload {
@@ -82,8 +83,11 @@ export class DatabaseService {
   private readonly sessions = new DatabaseSessionStore();
   private readonly locks = new LockFileService();
   private readonly kdbx = new KdbxOperations();
+  private readonly recovery: RecoveryService;
 
-  constructor(private readonly settings: SettingsStore) {}
+  constructor(private readonly settings: SettingsStore) {
+    this.recovery = new RecoveryService(settings.recoveryDir);
+  }
 
   listViews(): DatabaseView[] {
     return this.sessions.list().map((session) => this.toView(session));
@@ -251,6 +255,7 @@ export class DatabaseService {
     await rename(tempPath, session.path);
     session.fingerprint = await this.getFingerprint(session.path);
     session.dirty = false;
+    await this.recovery.clear(session.path);
     return this.toView(session);
   }
 
@@ -333,7 +338,7 @@ export class DatabaseService {
     }
 
     entry.times.update();
-    session.dirty = true;
+    this.markDirty(session);
     return this.toView(session);
   }
 
@@ -344,7 +349,7 @@ export class DatabaseService {
       throw new PassDeckError('ENTRY_NOT_FOUND', 'Запись не найдена.');
     }
     session.db.move(entry, undefined);
-    session.dirty = true;
+    this.markDirty(session);
     return this.toView(session);
   }
 
@@ -369,7 +374,7 @@ export class DatabaseService {
     }
     this.placeEntryBefore(target, entry, request.beforeEntryId ?? null);
     entry.times.update();
-    session.dirty = true;
+    this.markDirty(session);
     return this.toView(session);
   }
 
@@ -412,7 +417,7 @@ export class DatabaseService {
 
     session.db.move(group, target);
     group.times.update();
-    session.dirty = true;
+    this.markDirty(session);
     return this.toView(session);
   }
 
@@ -430,7 +435,7 @@ export class DatabaseService {
     }
 
     session.db.move(group, undefined);
-    session.dirty = true;
+    this.markDirty(session);
     return this.toView(session);
   }
 
@@ -443,7 +448,7 @@ export class DatabaseService {
       throw new PassDeckError('GROUP_NOT_FOUND', 'Родительская группа не найдена.');
     }
     session.db.createGroup(parent, request.name.trim() || 'Новая группа');
-    session.dirty = true;
+    this.markDirty(session);
     return this.toView(session);
   }
 
@@ -577,7 +582,7 @@ export class DatabaseService {
       entry.binaries.set(item.name, item.binary);
     }
     entry.times.update();
-    session.dirty = true;
+    this.markDirty(session);
     return this.toView(session);
   }
 
@@ -612,7 +617,7 @@ export class DatabaseService {
     entry.pushHistory();
     entry.binaries.delete(name);
     entry.times.update();
-    session.dirty = true;
+    this.markDirty(session);
     return this.toView(session);
   }
 
@@ -638,6 +643,7 @@ export class DatabaseService {
     }
     this.sessions.delete(session.id);
     await this.locks.release(session);
+    await this.recovery.clear(session.path);
     await this.persistOpenTabs();
   }
 
@@ -656,6 +662,7 @@ export class DatabaseService {
   async shutdown(): Promise<void> {
     await this.saveAllDirty();
     await this.persistOpenTabs();
+    this.recovery.shutdown();
     for (const session of this.sessions.list()) {
       await this.locks.release(session);
     }
@@ -663,6 +670,7 @@ export class DatabaseService {
 
   async closeAll(): Promise<void> {
     await this.saveAllDirty();
+    this.recovery.shutdown();
     for (const session of this.sessions.list()) {
       await this.locks.release(session);
     }
@@ -904,6 +912,21 @@ export class DatabaseService {
   private async getFingerprint(filePath: string): Promise<FileFingerprint> {
     const info = await stat(filePath);
     return { mtimeMs: info.mtimeMs, size: info.size };
+  }
+
+  private markDirty(session: DatabaseSession & { db: Kdbx }): void {
+    session.dirty = true;
+
+    if (!this.settings.get().recoveryEnabled || session.readOnly) {
+      return;
+    }
+
+    this.recovery.schedule(session.path, session.fingerprint, async () => {
+      if (!session.db || session.locked) {
+        throw new PassDeckError('LOCKED', 'База заблокирована.');
+      }
+      return this.kdbx.save(session.db);
+    });
   }
 
   private async persistOpenTabs(): Promise<void> {

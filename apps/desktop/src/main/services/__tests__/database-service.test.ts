@@ -17,6 +17,9 @@ async function createHarness() {
   const settings = {
     backupDir,
     recoveryDir,
+    get: () => ({
+      recoveryEnabled: false,
+    }),
     rememberDatabase: () => Promise.resolve(),
     forgetDatabase: (filePath: string) => {
       forgottenDatabases.push(filePath);

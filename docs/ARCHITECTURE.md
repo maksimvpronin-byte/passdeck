@@ -65,6 +65,8 @@ fingerprint(mtime,size)
 7. rename;
 8. обновление fingerprint.
 
+Если `recoveryEnabled` включён, первый dirty-change планирует зашифрованный recovery snapshot через `RecoveryService`. Snapshot создаётся из `db.save()` в main-процессе и хранится в `data/recovery` вместе с metadata. После успешного save recovery для этой базы удаляется.
+
 ## Пользовательские поля
 
 Обычные пользовательские поля входят в `DatabaseView`. Для защищённых полей renderer получает только имя, флаг защиты и признак наличия значения. Само значение остаётся в main-процессе и выдаётся только отдельным вызовом `database:reveal-custom-field` при явном показе или копировании.

@@ -51,7 +51,7 @@
 - JavaScript не гарантирует немедленное zeroization памяти;
 - тяжёлые KDF-операции пока выполняются в main event loop;
 - Windows Auto-Type использует OS-ввод и требует дополнительного runtime-тестирования;
-- Touch ID ещё не реализован;
+- Touch ID доступен только на macOS и должен всегда иметь fallback на мастер-пароль;
 - нет независимого security audit;
 - compatibility suite с KeePassXC должен быть расширен.
 

@@ -20,6 +20,7 @@
     "test": "npm run build -w @passdeck/shared && npm run test -w @passdeck/desktop",
     "build": "npm run build -w @passdeck/shared && npm run build -w @passdeck/desktop",
     "benchmark:kdbx": "node scripts/benchmark-kdbx-open-save.cjs",
+    "verify:release-gates": "node scripts/verify-release-gates.cjs",
     "package:win": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-portable-windows.ps1",
     "package:mac": "npm run build -w @passdeck/shared && npm run package:mac -w @passdeck/desktop",
     "format": "prettier --write .",
